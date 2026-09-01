@@ -79,19 +79,21 @@ test that depends on a developer's local git config — it already fails for any
 contributor with `core.autocrlf=input`. Pinning the fixture `text eol=crlf` makes the working
 tree match the assertion on every platform. This is a bug fix, not an accommodation.
 
+## D8 — Run from source; no packaged artifact for now
+**Decided (owner, 2026-09-01).** `npm run build` plus a `.desktop` launcher is the whole job. An
+AppImage is ceremony for a fork that is run on the machine it is developed on by someone who is
+pulling upstream anyway and already has the toolchain.
+
+This retires open question O1 and settles O2 with it: **no auto-update on Linux.** Upstream
+updates from GitHub Releases and verifies an Authenticode signature; there is no equivalent here
+and no release feed for this fork. The app already disables the updater when not packaged
+(`Auto-update disabled (dev / not packaged)`), so this costs no code.
+
+Revisit if the port is ever handed to someone else. Nothing in W1–W3 depends on it.
+
 ---
 
 # Open
-
-## O1 — Packaging target
-AppImage is the default Electron answer and the only Linux format `electron-updater` supports.
-But if this fork is only ever run from source on this machine, `npm run build` plus a `.desktop`
-file is the whole job and an AppImage is ceremony. **Deferred until asked** — it changes W4's size
-by an order of magnitude and nothing else depends on it.
-
-## O2 — Auto-update
-Upstream updates from GitHub Releases and verifies an Authenticode signature. There is no
-equivalent here and no release feed for this fork. Presumed **off on Linux**; revisit with O1.
 
 ## O3 — Kokoro TTS tier
 `onnxruntime-node` ships Linux prebuilts, so the neural voice tier may simply work once

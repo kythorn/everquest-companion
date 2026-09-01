@@ -61,6 +61,39 @@ feature we are dropping:
 - **Telemetry/feedback backend, AWS infra, the wiki scrapers** — untouched, they are
   platform-neutral already.
 
+## License — what this fork may and may not do
+
+Upstream is **FSL-1.1-MIT** (Functional Source License 1.1, MIT Future License), © 2026 Josh
+Moyers. Read `LICENSE`; the short version as it applies to this fork:
+
+**Permitted.** The grant covers use, copying, modification, derivative works, public display and
+redistribution for any **Permitted Purpose** — which is *any* purpose that is not a **Competing
+Use**. A Competing Use is narrow and has a commercial hinge: making the software available to
+others **in a commercial product or service** that substitutes for it or offers substantially
+similar functionality. A free, public, non-commercial Linux port is none of those things, and
+"your internal use and access" is called out as permitted explicitly. Forking this is fine.
+
+**Obligations, if we redistribute anything.**
+- Ship the license, or a link to it, with any copy, modification or derivative.
+- Do not remove the copyright notices. `LICENSE` stays exactly as it is; we do not relicense.
+- **Trademarks are not granted.** We may identify upstream as the origin — we may not brand this
+  port with its name or the author's as though it were ours. "A Linux port of Josh Moyers'
+  EverQuest Companion" is the right shape; naming a build after the product is not.
+
+**Do not.** Sell it, offer it as a paid service, or ship it inside a commercial product.
+
+**It becomes MIT on its own.** The Grant of Future License is irrevocable: each version is
+additionally MIT-licensed on the **second anniversary of the date that version was made
+available**. The code this fork is based on is 2026 code, so it converts in 2028, at which point
+none of the above binds it.
+
+**Contributing back is unencumbered** — there is no CLA and no `CONTRIBUTING.md` in the tree, so
+an upstream PR is an ordinary PR. This matters, because upstreaming is the cheapest merge
+strategy we have; see [`BACKPORT.md`](BACKPORT.md).
+
+*(Not legal advice — it is a reading of the license text, written down so the next person does not
+have to re-derive it.)*
+
 ## Definition of done
 
 - `npm test` and `cargo test` green on Linux.
