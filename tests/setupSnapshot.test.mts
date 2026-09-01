@@ -29,7 +29,6 @@ import {
   type ChildLossReport,
   type ChildProcessGoneEmitter
 } from '../src/main/childProcessGone'
-import { peekHealth, resetHealth } from '../src/main/telemetry/health'
 import { validateTelemetryEvent } from '../src/shared/telemetryValidate'
 import {
   CPU_COUNT_EDGES,
@@ -37,6 +36,18 @@ import {
   PRIMARY_SCALE_EDGES,
   TOTAL_MEM_GB_EDGES
 } from '../src/shared/telemetry'
+
+// A DYNAMIC import, not a static one: this repo's package.json carries no `"type"` field, so a
+// bare `.ts` file's module format is decided per import edge under tsx rather than once. A
+// STATIC import here, alongside `childProcessGone.ts`'s own static import of the same file,
+// resolves through two SEPARATE edges and — reproducible with two bare .ts files and no test
+// framework at all — lands on two independent copies of `telemetry/health.ts`'s module-level
+// counters, so this file's `peekHealth()` would read back a counter `noteChildProcessGone`
+// never wrote to. A DYNAMIC import() here runs AFTER the whole static module graph (which
+// already includes `childProcessGone.ts`'s own edge into `telemetry/health`, imported above) has
+// linked, so it resolves onto the SAME cached instance instead of opening a second one. See
+// tests/imageCacheHeal.test.mts's `freshSession` for the full mechanism (same bug, same fix).
+const { peekHealth, resetHealth } = await import('../src/main/telemetry/health')
 
 /** The install half, with nothing interesting in it: every machine-class assertion below varies
  *  ONE field against this, so a failure names the field it is about. */

@@ -13,14 +13,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import {
-  currentMode,
-  noteEngineEdge,
-  noteEventKind,
-  noteReplaying,
-  readBreadcrumbs,
-  resetBreadcrumbs
-} from '../src/main/telemetry/breadcrumbs'
-import {
   noteCurrentView,
   noteError,
   peekErrorReports,
@@ -30,6 +22,22 @@ import {
 import { errorFingerprint } from '../src/shared/errorReport'
 import { MAX_SESSION_FINGERPRINTS, SESSION_AGE_MS_EDGES } from '../src/shared/telemetry'
 import { validateTelemetryEvent } from '../src/shared/telemetryValidate'
+
+// EVERYTHING from `breadcrumbs.ts` travels through ONE DYNAMIC import, not a static one: this
+// repo's package.json carries no `"type"` field, so under tsx a bare `.ts` file's module format
+// is decided per import EDGE rather than once, and `errorReports.ts`'s own static edge into
+// `./breadcrumbs` can land on a DIFFERENT copy of the module than a static import here would —
+// so `noteReplaying(true)` below would flip a flag `currentMode()` (read internally by
+// `errorReports.ts` to stamp `ev.mode`) never sees, and `resetBreadcrumbs()` would clear a ring
+// `errorReports.ts` never reads from. A dynamic import() here runs after the whole static module
+// graph (already including `errorReports.ts`'s edge into `breadcrumbs.ts`, imported above) has
+// linked, so it resolves onto the SAME instance. Every value-carrying binding from this file has
+// to travel through this ONE import, not a mix of static-here-dynamic-there: a leftover static
+// import of even an unrelated binding from the same specifier is enough to win the dynamic
+// import's cache slot with a fourth, still-wrong copy (measured in tests/dataServerOps.test.mts).
+// Same mechanism as tests/imageCacheHeal.test.mts's `freshSession` note.
+const { currentMode, noteEngineEdge, noteEventKind, noteReplaying, readBreadcrumbs, resetBreadcrumbs } =
+  await import('../src/main/telemetry/breadcrumbs')
 
 /** Every test starts from a clean session; the modules are process-global by design. */
 function fresh(now = 1_000_000): void {

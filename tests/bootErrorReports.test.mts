@@ -139,12 +139,15 @@ test('THE QUARANTINE EVENT, end to end: the real message reaches the drain', () 
     assert.equal(drained.length, 1, 'the event the fleet has never seen once')
     assert.ok(drained[0].fingerprint.length > 0, 'and it has an identity the error store can group on')
     // AND IT IS STILL LEGIBLE AFTER REDACTION, which is the whole reason `migrateStoreFile` puts
-    // the verdict ahead of the paths: `redactMessage` replaces the first path-shaped run with
-    // `<path>` and takes the rest of the line with it. The two things worth counting fleet-wide —
-    // that this happened at all, and whether the user kept their settings — both survive.
+    // the verdict ahead of the paths. `redactMessage`'s PATH_RE is global, so BOTH paths the real
+    // line names (`storeFile.ts`: `… ${storePath} was moved to ${quarantine}`) are replaced —
+    // the source path and the quarantine destination land as two separate `<path>` tokens, not
+    // one, because " was moved to " is whitespace-separated and neither path-arm crosses a
+    // space. The two things worth counting fleet-wide — that this happened at all, and whether
+    // the user kept their settings — both survive either way.
     assert.equal(
       drained[0].redactedMessage,
-      'store schema: the store file is not valid JSON, starting from defaults - <path>'
+      'store schema: the store file is not valid JSON, starting from defaults - <path> was moved to <path>'
     )
   } finally {
     atBoot()

@@ -48,7 +48,9 @@ import {
   resetImageReadWarnings,
   takeImageReadWarning
 } from '../src/main/imageCache'
-import { resetHealth, takeHealth } from '../src/main/telemetry/health'
+// A DYNAMIC import, not a static one — see the note above `freshSession` for why: this file and
+// `imageCache.ts` would otherwise each get their OWN copy of this module's counters.
+const { resetHealth, takeHealth } = await import('../src/main/telemetry/health')
 
 const TEST_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
 
@@ -120,7 +122,23 @@ function stemOf(url: string): string {
   return cacheStem(req)
 }
 
-/** Every suite-visible piece of session state these tests share, back to a fresh session. */
+/**
+ * Every suite-visible piece of session state these tests share, back to a fresh session.
+ *
+ * WHY `telemetry/health` IS IMPORTED DYNAMICALLY (top of file), NOT STATICALLY: this repo's
+ * `package.json` carries no `"type"` field, so a `.ts` file's module format is decided per
+ * import edge rather than once. A STATIC `import … from '../src/main/telemetry/health'` here,
+ * alongside `imageCache.ts`'s own STATIC `import … from './telemetry/health'`, resolves through
+ * two SEPARATE edges into the same file — and under tsx (no native TS support in this Node),
+ * each edge gets transpiled and evaluated on its own, landing on two independent module records
+ * with two independent copies of `pending` (`telemetry/health.ts`'s module-level counter object)
+ * even though `import.meta.url` reads identical for both. The result: this file's `takeHealth()`
+ * drains a counter `installImageCacheProtocol`'s `noteImageCacheReadFailure()` never wrote to —
+ * reproducible outside this suite entirely with two bare `.ts` files and no test framework at
+ * all. A DYNAMIC `import()` here instead runs AFTER the whole static module graph (which
+ * includes `imageCache.ts`'s own static edge into `telemetry/health`, imported above) has
+ * already linked, so it resolves onto the SAME cached instance rather than opening a second one.
+ */
 function freshSession(): void {
   resetHealth()
   resetImageReadWarnings()
@@ -349,7 +367,11 @@ test('THE WIRING: the read failure evicts, counts, and never reaches the error s
   // order is the pin: evict, then count, then decide whether to say anything.
   const src = readFileSync(join(TEST_ROOT, 'src/main/imageCache.ts'), 'utf8')
   // The catch does one thing and files nothing.
-  const readCatch = src.slice(src.indexOf('const bytes = await readFile(path)'), src.indexOf('return null\n  }'))
+  // `.indexOf`'s second call is given a FROM-INDEX: without it, an EARLIER, unrelated
+  // `return null\n  }` (a nested try/catch elsewhere in the file, above `readFile`) wins the
+  // search and produces an empty slice — indices in file order, not in ANY order.
+  const readStart = src.indexOf('const bytes = await readFile(path)')
+  const readCatch = src.slice(readStart, src.indexOf('return null\n  }', readStart))
   assert.match(readCatch, /await healUnreadableEntry\(path, err, repair, warn\)/)
   assert.doesNotMatch(readCatch, /onError\(/, 'a self-healed read never files an error')
   // …and that one thing is: evict (userData only), count, then decide whether to say anything.

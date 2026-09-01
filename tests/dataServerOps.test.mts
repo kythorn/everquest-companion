@@ -19,12 +19,7 @@
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import {
-  EngineError,
-  OPS_ARE_EXHAUSTIVE,
-  RESULT_GUARDS,
-  type RequestOp
-} from '../src/shared/dataServer/ops'
+import type { RequestOp } from '../src/shared/dataServer/ops'
 import { fixture, flush, rig, shakeHands } from './dataServerRig.mjs'
 import type {
   ClientMessage,
@@ -33,6 +28,26 @@ import type {
   Reply,
   ReplyResult
 } from '../src/shared/dataServer/protocol.generated'
+
+// EVERYTHING from `ops.ts` that carries VALUE (not just type) is imported through ONE DYNAMIC
+// import, not statically: this repo's package.json carries no `"type"` field, so under tsx a
+// bare `.ts` file's module format is decided per import EDGE rather than once, and each distinct
+// edge into `ops.ts` can transpile and evaluate on its own — landing on its own copy of the
+// `EngineError` class, so `e instanceof EngineError` below would read false for an error the
+// client really did throw. Reproducible with two bare .ts files and no test framework at all.
+// It is not enough to make only `EngineError`'s OWN edge dynamic, either: a SEPARATE static edge
+// from this file into the same specifier (`OPS_ARE_EXHAUSTIVE`/`RESULT_GUARDS`, formerly a plain
+// `import … from '../src/shared/dataServer/ops'` above) is enough on its own to pull in a THIRD
+// copy and win the dynamic import's resolution — so everything has to travel through the one
+// edge. That edge runs AFTER the whole static module graph (already including
+// `dataServerRig.mts` → `client.ts`'s own static edge into `ops.ts`, imported above) has linked,
+// so it resolves onto the SAME class `client.ts` throws, rather than a fourth one. And because
+// the two tests this fixes call bare `assert.ok(...)`/`assert.equal(...)` (no message) INSIDE
+// the validator rather than returning a plain boolean, node's failure-message source lookup for
+// an unmet assertion is what actually ate the 15-30s these two tests took to fail before this
+// fix — not a real engine deadline. Same mechanism as tests/imageCacheHeal.test.mts's
+// `freshSession` note and tests/dataServerTransport.test.mts's `TransportError` note.
+const { EngineError, OPS_ARE_EXHAUSTIVE, RESULT_GUARDS } = await import('../src/shared/dataServer/ops')
 
 /** Every op the schema's client union names, read off the committed conversation's own shapes. */
 const EVERY_OP: RequestOp[] = [

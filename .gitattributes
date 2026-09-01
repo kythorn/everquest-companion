@@ -13,3 +13,12 @@
 # change (they were already LF); only the checkout does.
 scripts/sources/cache/** text eol=lf
 src/main/data/spells.json text eol=lf
+
+# JOS-429 — the achievements fixture is a REAL CRLF export (`/outputfile achievements` writes
+# CRLF, the game's own Windows convention), committed verbatim so tests/outputsAchievements.test.mts
+# can pin the exact byte shape a client parses. The blob itself is LF — MediaWiki-scraper-style
+# tooling and most editors normalize on save — so without a rule here the CRLF assertion only
+# holds on a checkout whose `core.autocrlf` happens to rewrite it, which already fails for any
+# contributor (Windows included) who sets `core.autocrlf=input`. `eol=crlf` makes the checkout
+# CRLF on every machine regardless of that setting, matching what the test asserts everywhere.
+tests/fixtures/Primitive_freeport-Achievements.txt text eol=crlf

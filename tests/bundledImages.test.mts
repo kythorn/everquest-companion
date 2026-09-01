@@ -45,10 +45,17 @@ const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
 
 // ---- the probe ----------------------------------------------------------------------
 
+// `appPath`/`resourcesPath`/`cwd` are real OS paths Electron hands the app, so the fixture below
+// needs an ABSOLUTE root that means that on whatever platform is running this test — `C:` only
+// answers `isAbsolute` on win32 (`path.join` is POSIX everywhere else, so 'C:' is just a bare
+// path segment there, same convention as tests/security.test.mts's WIN/RENDERER_DIR).
+const WIN = process.platform === 'win32'
+const ABS_ROOT = WIN ? 'C:' : '/'
+
 const PATHS = {
-  appPath: join('C:', 'app', 'resources', 'app.asar'),
-  resourcesPath: join('C:', 'app', 'resources'),
-  cwd: join('C:', 'checkout')
+  appPath: join(ABS_ROOT, 'app', 'resources', 'app.asar'),
+  resourcesPath: join(ABS_ROOT, 'app', 'resources'),
+  cwd: join(ABS_ROOT, 'checkout')
 }
 
 test('bundledImageRoots tries the asar, then the unpacked copy, then resources, then cwd', () => {
@@ -84,7 +91,7 @@ test('findBundledImagesDir returns null when this build ships no images', () => 
 })
 
 test("bundled lookup uses the runtime cache own names, so the two roots are one namespace", () => {
-  const dir = join('C:', 'bundle')
+  const dir = join(ABS_ROOT, 'bundle')
   assert.deepEqual(bundledCandidatePaths(dir, { kind: 'item', id: '1234' }), [
     join(dir, 'item-1234.png')
   ])

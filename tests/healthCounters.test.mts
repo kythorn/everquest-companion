@@ -270,7 +270,8 @@ test('JOS-266 wired the eighth, and it is the third count on a path that used to
   //    the cache heals by evicting the entry and re-fetching it. The behaviour is driven for real
   //    in tests/imageCacheHeal.test.mts; what is asserted here is the counter's one call site.
   const img = read('src/main/imageCache.ts')
-  const readCatch = img.slice(img.indexOf('const bytes = await readFile(path)'), img.indexOf('return null\n  }'))
+  const readStart = img.indexOf('const bytes = await readFile(path)')
+  const readCatch = img.slice(readStart, img.indexOf('return null\n  }', readStart))
   assert.match(readCatch, /await healUnreadableEntry\(path, err, repair, warn\)/, 'the catch heals')
   assert.doesNotMatch(readCatch, /onError\(/, 'and it no longer files an error')
   assert.match(img, /async function healUnreadableEntry[\s\S]*?noteImageCacheReadFailure\(\)/, 'the heal counts')

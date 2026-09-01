@@ -38,7 +38,19 @@ import {
   encodeLine,
   type ByteChannel
 } from '../src/shared/dataServer/ndjson'
-import { TransportError, type Transport } from '../src/shared/dataServer/transport'
+import type { Transport } from '../src/shared/dataServer/transport'
+
+// `TransportError` is imported DYNAMICALLY, not statically: this repo's package.json carries no
+// `"type"` field, so under tsx a bare `.ts` file's module format is decided per import edge
+// rather than once. A static import of the class here, alongside `memoryTransport.ts`'s and
+// `ndjson.ts`'s own static imports of the SAME file, resolves through separate edges and lands
+// on separate copies of the `TransportError` class — so `e instanceof TransportError` reads
+// false for an error the production code really did throw ("an error with identical name but a
+// different prototype" is Node's own message for exactly this). A dynamic import() here runs
+// after the whole static module graph (already including memoryTransport.ts's and ndjson.ts's
+// edges into transport.ts, imported above) has linked, so it resolves onto the SAME class rather
+// than a second one. Same mechanism as tests/imageCacheHeal.test.mts's `freshSession` note.
+const { TransportError } = await import('../src/shared/dataServer/transport')
 
 // ---- the conversation, read from the committed fixtures -----------------------------------------
 

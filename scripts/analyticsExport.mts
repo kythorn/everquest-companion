@@ -55,7 +55,7 @@ import {
 } from 'node:fs'
 import { join } from 'node:path'
 import { Readable, Transform } from 'node:stream'
-import { pipeline } from 'node:stream/promises'
+import { finished, pipeline } from 'node:stream/promises'
 import { createGzip } from 'node:zlib'
 import { SCHEMA_FILE, TRIAGE_DIR, type Clients, type Row } from '../src/main/triage/store'
 // THE TABLE LIST, THE MANIFEST SHAPE AND THE FILE FORMAT MOVED TO src/shared (JOS-398) and are
@@ -181,18 +181,24 @@ async function writeTable(
       done(null, chunk)
     },
   })
+  const dest = createWriteStream(join(dir, file))
   try {
-    await pipeline(
-      Readable.from(jsonLines(c, t, page, count)),
-      createGzip({ level: 9 }),
-      tap,
-      createWriteStream(join(dir, file)),
-    )
+    await pipeline(Readable.from(jsonLines(c, t, page, count)), createGzip({ level: 9 }), tap, dest)
   } catch (err) {
     if (codeOf(err) !== UNDEFINED_TABLE) throw err
-    // The stream had already opened the file (and written the opening bracket) before the first
-    // page came back 42P01. Remove it: a zero-row file for a table that does not exist would be
-    // indistinguishable, on a restore, from a table that exists and is empty.
+    // The stream MAY have already opened the file (and written the opening bracket) before the
+    // first page came back 42P01 — and under load it may not have, yet. `pipeline()`'s rejection
+    // fires as soon as the SOURCE errors; it does not wait for `dest`'s own still-pending
+    // `open()` to land, so an unconditional `rmSync` here can run before the fd (and therefore
+    // the file) exists at all. Node then finishes the open a moment later — the stream is
+    // already destroyed, so nothing is written, but the now-empty file is created AFTER our
+    // rmSync already ran and found nothing there. Confirmed by direct reproduction: ~9% of runs
+    // under concurrent load, always a 0-byte file, absent under low load only because open()
+    // usually wins the race there. Waiting for `dest` to fully settle (it always eventually
+    // emits 'close', whether or not it ever opened) makes the rmSync race-free: a zero-row file
+    // for a table that does not exist would be indistinguishable, on a restore, from a table
+    // that exists and is empty, so it must actually be gone before this returns.
+    await finished(dest).catch(() => undefined)
     rmSync(join(dir, file), { force: true })
     return null
   }

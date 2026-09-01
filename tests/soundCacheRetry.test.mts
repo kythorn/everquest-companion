@@ -28,12 +28,22 @@ import {
   invalidateSoundCaches,
   playSound
 } from '../src/renderer/src/features/alerts/soundCache'
-import {
-  noteAudioPlayed,
-  reportAudioFailure,
-  resetAudioHealth
-} from '../src/renderer/src/features/alerts/audioHealth'
 import { AUDIO_FAILURE_THROTTLE_MS } from '../src/shared/audioFailureLog'
+
+// A DYNAMIC import, not a static one: this repo's package.json carries no `"type"` field, so a
+// bare `.ts` file's module format is decided per import edge under tsx rather than once. A STATIC
+// import here, alongside `soundCache.ts`'s own static import of the same file, resolves through
+// two SEPARATE edges and lands on two independent copies of `audioHealth.ts`'s module-level
+// `throttle` Map — so `resetAudioHealth()` called on THIS binding would clear a Map that
+// `getSoundUrl`/`playSound` never read from, and a throttle cell one of soundCache's own calls set
+// (e.g. C2's identical fetch failure) would silently survive into L2/L7 and swallow the report
+// they assert on. A DYNAMIC import() here runs AFTER the static module graph above (which already
+// includes `soundCache.ts`'s own edge into `audioHealth.ts`) has linked, so it resolves onto the
+// SAME cached instance instead of opening a second one. See tests/setupSnapshot.test.mts's
+// `peekHealth`/`resetHealth` import for the same bug and the same fix elsewhere in the suite.
+const { noteAudioPlayed, reportAudioFailure, resetAudioHealth } = await import(
+  '../src/renderer/src/features/alerts/audioHealth'
+)
 
 // ------------------------------------------------------------------------------ the stubs
 

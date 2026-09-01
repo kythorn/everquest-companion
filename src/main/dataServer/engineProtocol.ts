@@ -702,8 +702,23 @@ function servedCycleLog(cycles: number, last: Omit<EngineExitCause, 'attempt'>):
 // the e2e harness's `override` (below) still outranks everything for whoever wants to name a file
 // outright.
 
-/** The engine binary's file name. Windows only today, like the rest of this app. */
-export const ENGINE_BIN_NAME = process.platform === 'win32' ? 'engined.exe' : 'engined'
+/**
+ * The engine binary's file name on a GIVEN platform, rather than on the running one.
+ *
+ * Split out of `ENGINE_BIN_NAME` so a caller that means a SPECIFIC platform can say so. The one
+ * that does is `tests/enginePackaging.test.mts`: `electron-builder.yml` packages for Windows and
+ * only Windows, so the name it filters on must be checked against the WINDOWS spelling whatever
+ * machine happens to run the suite. Asking that question through this function keeps the check
+ * the test was built to make — that the config names the resolver's own constant rather than a
+ * second spelling of it — instead of restating 'engined.exe' in a second place, which is the
+ * exact drift the test exists to catch.
+ */
+export function engineBinNameFor(platform: string): string {
+  return platform === 'win32' ? 'engined.exe' : 'engined'
+}
+
+/** The engine binary's file name on the platform this process is running on. */
+export const ENGINE_BIN_NAME = engineBinNameFor(process.platform)
 
 /** Which of cargo's two profiles a dev-tree binary was built with. There is no third one this app
  *  has ever produced, and a name outside the pair is not a profile — it is a typo. */

@@ -436,33 +436,55 @@ test('an app update wipes the placement and the CACHE puts it back, offline', as
 
 // ---------------------------------------------------------------- 6. the re-probe
 
+/**
+ * `createSpeechEngine`'s worker is deliberately `unref()`'d (engine.ts: "a warm worker never
+ * holds the process open at quit") — correct for the real app, which is an Electron main process
+ * with a window and IPC always keeping the event loop alive regardless. A bare `node --test`
+ * process running just this file has nothing else scheduled, so the instant an unref'd worker
+ * that dies at module load is the only thing outstanding, node can decide the loop is empty and
+ * let the process fall through — silently — before the worker's `error` event ever reaches
+ * `ensureWorker`'s handler and resolves the `say()` promise below awaits. Same mechanism, same
+ * fix, as `withWorkerEventLoopAlive` in tests/speechEngine.test.mts — kept local here rather than
+ * imported because this is the only test in this file that spawns a dying worker.
+ */
+async function withWorkerEventLoopAlive<T>(fn: () => Promise<T>): Promise<T> {
+  const keepalive = setInterval(() => undefined, 1_000)
+  try {
+    return await fn()
+  } finally {
+    clearInterval(keepalive)
+  }
+}
+
 test('a repair unlatches the engine fault; nothing else does', async () => {
-  const root = tempRoot()
-  const worker = join(root, 'dying-worker.cjs')
-  writeFileSync(worker, "const e = new Error('dlopen failed'); e.code = 'ERR_DLOPEN_FAILED'; throw e\n")
-  const engine = createSpeechEngine({
-    userData: root,
-    workerPath: worker,
-    isInstalled: () => true
+  await withWorkerEventLoopAlive(async () => {
+    const root = tempRoot()
+    const worker = join(root, 'dying-worker.cjs')
+    writeFileSync(worker, "const e = new Error('dlopen failed'); e.code = 'ERR_DLOPEN_FAILED'; throw e\n")
+    const engine = createSpeechEngine({
+      userData: root,
+      workerPath: worker,
+      isInstalled: () => true
+    })
+    assert.deepEqual(await engine.say('charm break', 'af_heart'), {
+      ok: false,
+      reason: 'engine-unloadable'
+    })
+    // The latch is real: a second utterance answers from the fault without spawning anything.
+    assert.deepEqual(await engine.say('mesmerization', 'af_heart'), {
+      ok: false,
+      reason: 'engine-unloadable'
+    })
+    // A repair clears it — once. A second call has nothing to clear, which is how the caller
+    // knows not to announce a fix twice.
+    assert.equal(engine.retryAfterRepair(), true)
+    assert.equal(engine.retryAfterRepair(), false)
+    // And the next utterance really does try again: the same worker dies the same way, which is
+    // the honest outcome for a repair that did not take.
+    assert.deepEqual(await engine.say('root', 'af_heart'), {
+      ok: false,
+      reason: 'engine-unloadable'
+    })
+    engine.dispose()
   })
-  assert.deepEqual(await engine.say('charm break', 'af_heart'), {
-    ok: false,
-    reason: 'engine-unloadable'
-  })
-  // The latch is real: a second utterance answers from the fault without spawning anything.
-  assert.deepEqual(await engine.say('mesmerization', 'af_heart'), {
-    ok: false,
-    reason: 'engine-unloadable'
-  })
-  // A repair clears it — once. A second call has nothing to clear, which is how the caller
-  // knows not to announce a fix twice.
-  assert.equal(engine.retryAfterRepair(), true)
-  assert.equal(engine.retryAfterRepair(), false)
-  // And the next utterance really does try again: the same worker dies the same way, which is
-  // the honest outcome for a repair that did not take.
-  assert.deepEqual(await engine.say('root', 'af_heart'), {
-    ok: false,
-    reason: 'engine-unloadable'
-  })
-  engine.dispose()
 })

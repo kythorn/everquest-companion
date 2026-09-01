@@ -391,6 +391,35 @@ function throwingWorker(root: string, code: string | null): string {
   return path
 }
 
+/**
+ * `createSpeechEngine`'s worker is deliberately `unref()`'d (engine.ts: "a warm worker never
+ * holds the process open at quit") — correct for the real app, which is an Electron main process
+ * with a window and IPC always keeping the event loop alive regardless. A bare `node --test`
+ * process running JUST this file has nothing else scheduled, so the instant an unref'd worker
+ * that dies at module load is the only thing outstanding, node can decide the loop is empty and
+ * let the process fall through — SILENTLY, no error, no timeout — before the worker has even
+ * finished starting, let alone before its `error` event reaches `ensureWorker`'s handler and
+ * resolves the `say()` promise these tests await. Measured outside this suite entirely: a bare
+ * `new Worker(path-that-throws)`, `unref()`'d and immediately `postMessage`'d with nothing else
+ * running, exits 0 with its `error` handler never invoked at all — which is this file's own
+ * `cancelledByParent` / "Promise resolution is still pending but the event loop has already
+ * resolved" failure, reproduced with two lines and no test framework.
+ *
+ * The fix belongs HERE, not in `engine.ts`: production's `unref()` is correct for Electron, and
+ * loosening it would be fixing a bug the shipped app does not have, to satisfy a test process
+ * that is missing what Electron always supplies for free. One ref'd timer, held only for the
+ * duration of a test that spawns a worker expected to die, gives this bare process the same
+ * "something else is keeping the loop open" guarantee Electron gives the real one.
+ */
+async function withWorkerEventLoopAlive<T>(fn: () => Promise<T>): Promise<T> {
+  const keepalive = setInterval(() => undefined, 1_000)
+  try {
+    return await fn()
+  } finally {
+    clearInterval(keepalive)
+  }
+}
+
 test('a tier that is NOT downloaded says exactly that, and never spawns a worker', async () => {
   const root = tempRoot()
   const engine = createSpeechEngine({ userData: root, workerPath: join(root, 'never-read.cjs') })
@@ -403,23 +432,25 @@ test('a tier that is NOT downloaded says exactly that, and never spawns a worker
 })
 
 test('a DOWNLOADED tier whose worker dies is engine-failed, not "not installed"', async () => {
-  const root = tempRoot()
-  const errors: string[] = []
-  const engine = createSpeechEngine({
-    userData: root,
-    workerPath: throwingWorker(root, null),
-    isInstalled: () => true,
-    onError: (message) => errors.push(message)
+  await withWorkerEventLoopAlive(async () => {
+    const root = tempRoot()
+    const errors: string[] = []
+    const engine = createSpeechEngine({
+      userData: root,
+      workerPath: throwingWorker(root, null),
+      isInstalled: () => true,
+      onError: (message) => errors.push(message)
+    })
+    assert.deepEqual(await engine.say('charm break', 'af_heart'), { ok: false, reason: 'engine-failed' })
+    // A DEAD WORKER STAYS DEAD: the second utterance answers from the latch rather than spawning
+    // a second thread that would fail identically and file a second report.
+    assert.deepEqual(await engine.say('root broke', 'af_heart'), { ok: false, reason: 'engine-failed' })
+    assert.ok(
+      errors.some((m) => m.includes('the synthesis worker failed')),
+      errors.join(' | ')
+    )
+    engine.dispose()
   })
-  assert.deepEqual(await engine.say('charm break', 'af_heart'), { ok: false, reason: 'engine-failed' })
-  // A DEAD WORKER STAYS DEAD: the second utterance answers from the latch rather than spawning
-  // a second thread that would fail identically and file a second report.
-  assert.deepEqual(await engine.say('root broke', 'af_heart'), { ok: false, reason: 'engine-failed' })
-  assert.ok(
-    errors.some((m) => m.includes('the synthesis worker failed')),
-    errors.join(' | ')
-  )
-  engine.dispose()
 })
 
 test('ERR_DLOPEN_FAILED is its OWN answer — the engine cannot load on this PC', async () => {
@@ -428,23 +459,25 @@ test('ERR_DLOPEN_FAILED is its OWN answer — the engine cannot load on this PC'
   // is a different sentence to the user (a remedy exists, and it is not "download the model"),
   // so it must be a different reason. This also pins that the code SURVIVES the worker→parent
   // hop, which is the only reason main can tell the two apart at all.
-  const root = tempRoot()
-  const errors: string[] = []
-  const engine = createSpeechEngine({
-    userData: root,
-    workerPath: throwingWorker(root, 'ERR_DLOPEN_FAILED'),
-    isInstalled: () => true,
-    onError: (message) => errors.push(message)
+  await withWorkerEventLoopAlive(async () => {
+    const root = tempRoot()
+    const errors: string[] = []
+    const engine = createSpeechEngine({
+      userData: root,
+      workerPath: throwingWorker(root, 'ERR_DLOPEN_FAILED'),
+      isInstalled: () => true,
+      onError: (message) => errors.push(message)
+    })
+    assert.deepEqual(await engine.say('charm break', 'af_heart'), {
+      ok: false,
+      reason: 'engine-unloadable'
+    })
+    assert.ok(
+      errors.some((m) => m.includes('ERR_DLOPEN_FAILED') && m.includes('Visual C++')),
+      'the log line names the code AND the measured missing piece: ' + errors.join(' | ')
+    )
+    engine.dispose()
   })
-  assert.deepEqual(await engine.say('charm break', 'af_heart'), {
-    ok: false,
-    reason: 'engine-unloadable'
-  })
-  assert.ok(
-    errors.some((m) => m.includes('ERR_DLOPEN_FAILED') && m.includes('Visual C++')),
-    'the log line names the code AND the measured missing piece: ' + errors.join(' | ')
-  )
-  engine.dispose()
 })
 
 test('an unknown voice id falls back to the tier default rather than refusing to speak', () => {

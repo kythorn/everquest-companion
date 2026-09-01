@@ -41,6 +41,7 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import {
   ENGINE_BIN_NAME,
+  engineBinNameFor,
   engineBinaryCandidates
 } from '../src/main/dataServer/engineProtocol'
 
@@ -97,10 +98,19 @@ test('THE SHIPPED PATH IS THE PROBED PATH — composed, not restated', () => {
   // `to` is relative to the packaged `resources/` directory (extraResources' base), so the file's
   // packaged address is exactly this. `resourcesPath` is a stand-in: what is being compared is the
   // SHAPE below the resources root, which is the half the two files have to agree on.
+  //
+  // `binName` IS NAMED FOR WIN32 EXPLICITLY, not taken from the running platform.
+  // `electron-builder.yml` packages for Windows and only Windows, so the name it filters on is a
+  // fact about WINDOWS — but `ENGINE_BIN_NAME` answers for whatever OS is running this suite, so
+  // on a Linux dev box the two disagree for a reason that says nothing about the config. Asking
+  // `engineBinNameFor('win32')` states the platform the question is about, and keeps BOTH halves
+  // of what this test was built to check: the destination composes correctly, AND the config
+  // names the resolver's own constant rather than a second spelling of it.
   const shipped = `RES/${to}/${filter}`
   const [firstPackagedCandidate] = engineBinaryCandidates({
     appPath: '',
-    resourcesPath: 'RES'
+    resourcesPath: 'RES',
+    binName: engineBinNameFor('win32')
   })
   assert.equal(
     shipped,
@@ -108,8 +118,9 @@ test('THE SHIPPED PATH IS THE PROBED PATH — composed, not restated', () => {
     'electron-builder must put the engine where engineBinaryCandidates looks FIRST among the ' +
       'packaged candidates — a mismatch here is a packaged app that silently runs with no engine'
   )
-  // …and the name is the resolver's own constant rather than a second spelling of it.
-  assert.equal(filter, ENGINE_BIN_NAME)
+  // …and the name is the resolver's own constant rather than a second spelling of it. Asked of
+  // win32 because that is the only platform this config ever builds for (D8).
+  assert.equal(filter, engineBinNameFor('win32'))
 })
 
 test('the binary comes out of cargo`s RELEASE directory, and only the binary does', () => {

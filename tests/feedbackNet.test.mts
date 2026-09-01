@@ -13,7 +13,9 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { execFileSync } from 'node:child_process'
-import { readFileSync } from 'node:fs'
+import { readFileSync, mkdtempSync, writeFileSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import * as net from '../src/main/feedback/net'
 import { allowedUploadUrl, allowedUploadUrlFor, feedbackEndpointConfigured, uploadEndpoints } from '../src/main/feedback/net'
 
@@ -289,24 +291,39 @@ test('IN A REAL PROCESS: setting EQ_FEEDBACK_URL changes nothing when the gate i
   // import net.ts for real — one with the env var set, one without — and the resolved endpoint,
   // the dev origin and the upload verdict must come back byte-identical. This runner is not
   // Electron, which is exactly the "gate shut" case a packaged build is in.
+  //
+  // The child runs a real .mjs FILE rather than `-e`/`--input-type=module` source: tsx's ESM
+  // loader resolves a dynamic `import()` of a `.ts` sibling to its real named exports only when
+  // the importing module itself has a real, on-disk parent URL. Under `-e` the parent is the
+  // synthetic `[eval1]` specifier, and tsx falls back to loading `net.ts` through the CJS path,
+  // which collapses every named export into a single `default` — reproducible with plain
+  // `node --import tsx -e` outside this suite entirely, so it is a property of eval'd entry
+  // points, not of `net.ts`, this test's env handling, or the platform underneath either.
   const netUrl = new URL('../src/main/feedback/net.ts', import.meta.url).href
   const code =
     `const n = await import(${JSON.stringify(netUrl)});` +
     `process.stdout.write(JSON.stringify([n.FEEDBACK_API_URL, n.DEV_UPLOAD_ORIGIN,` +
     ` n.allowedUploadUrl('http://127.0.0.1:8477/devstack/upload/x')]))`
-  const run = (env: NodeJS.ProcessEnv): string =>
-    execFileSync(process.execPath, ['--import', 'tsx', '--input-type=module', '-e', code], {
-      encoding: 'utf8',
-      env,
-    })
+  const scriptDir = mkdtempSync(join(tmpdir(), 'eq-feedback-net-'))
+  const scriptPath = join(scriptDir, 'run.mjs')
+  writeFileSync(scriptPath, code)
+  try {
+    const run = (env: NodeJS.ProcessEnv): string =>
+      execFileSync(process.execPath, ['--import', 'tsx', scriptPath], {
+        encoding: 'utf8',
+        env,
+      })
 
-  const bare = { ...process.env }
-  delete bare.EQ_FEEDBACK_URL
-  const withEnv = run({ ...bare, EQ_FEEDBACK_URL: DEV_URL })
-  const without = run(bare)
-  assert.equal(withEnv, without)
-  assert.equal(JSON.parse(withEnv)[1], '')
-  assert.equal(JSON.parse(withEnv)[2], null)
+    const bare = { ...process.env }
+    delete bare.EQ_FEEDBACK_URL
+    const withEnv = run({ ...bare, EQ_FEEDBACK_URL: DEV_URL })
+    const without = run(bare)
+    assert.equal(withEnv, without)
+    assert.equal(JSON.parse(withEnv)[1], '')
+    assert.equal(JSON.parse(withEnv)[2], null)
+  } finally {
+    rmSync(scriptDir, { recursive: true, force: true })
+  }
 })
 
 // ---- THE STARTUP WIRING (feedback/queue.ts ← src/main/index.ts) --------------------------
