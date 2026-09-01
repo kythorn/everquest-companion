@@ -21,6 +21,7 @@ import {
   type NormalizedEqDir,
   type OverrideProbes
 } from './discovery'
+import { linuxEqRootCandidates, realLinuxFsProbes } from './discoveryLinux'
 
 /**
  * EQ install-dir resolution. The pure, store-free discovery core lives in
@@ -82,6 +83,11 @@ function envCandidates(): string[] {
  */
 const DISCOVERY_BUDGET_MS = 6000
 
+/** Wine/Proton prefix sweep (Linux only — see discoveryLinux.ts, D3/D4); a no-op on win32, where
+ *  the game has no prefix to sweep and `discoverEqRoot`'s drive walk already covers it. */
+const linuxPrefixCandidates = (): string[] =>
+  process.platform === 'win32' ? [] : linuxEqRootCandidates(realLinuxFsProbes())
+
 /** The real-environment discovery probes (env → registry → drive sweep), ceiling-bounded. */
 function realProbes(): DiscoveryProbes {
   return {
@@ -91,6 +97,7 @@ function realProbes(): DiscoveryProbes {
       ...registryInstallCandidates(Date.now() + DISCOVERY_BUDGET_MS)
     ],
     fixedDrives,
+    linuxPrefixCandidates,
     budgetMs: DISCOVERY_BUDGET_MS
   }
 }
@@ -169,6 +176,7 @@ export function refreshEqDiscoveryCheaply(): void {
     hasLogs: rootHasLogs,
     extraCandidates: envCandidates,
     fixedDrives,
+    linuxPrefixCandidates,
     budgetMs: DISCOVERY_BUDGET_MS
   })
   // A positive find is persisted too (JOS-112), so the install this rescan finally caught is

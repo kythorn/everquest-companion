@@ -32,8 +32,12 @@ import { join } from 'path'
 export const EQ_ROOT =
   'C:\\Users\\Public\\Daybreak Game Company\\Installed Games\\EverQuest Legends'
 
-/** Relative sub-paths (below a drive root) where a Daybreak install commonly lands. */
-const DAYBREAK_SUBPATHS = [
+/**
+ * Relative sub-paths (below a drive root) where a Daybreak install commonly lands. Exported so
+ * `discoveryLinux.ts` (Wine/Proton prefix sweep, D3/D4) can reuse this table with `\` → `/`
+ * instead of maintaining a second, divergent copy of it.
+ */
+export const DAYBREAK_SUBPATHS = [
   'Users\\Public\\Daybreak Game Company\\Installed Games\\EverQuest Legends',
   'Daybreak Game Company\\Installed Games\\EverQuest Legends',
   'Program Files\\Daybreak Game Company\\Installed Games\\EverQuest Legends',
@@ -55,6 +59,12 @@ export interface DiscoveryProbes {
   extraCandidates: () => string[]
   /** Fixed-drive letters to sweep, e.g. ['C:', 'D:']. */
   fixedDrives: () => string[]
+  /**
+   * Linux only: fully-resolved Wine/Proton install-root candidates (a prefix's `drive_c` walked
+   * component-by-component against `DAYBREAK_SUBPATHS`, case-insensitively — discoveryLinux.ts,
+   * D3/D4). Unlike `fixedDrives`, these need no further joining. Omitted on win32.
+   */
+  linuxPrefixCandidates?: () => string[]
   /**
    * Wall-clock CEILING for the whole sweep, in ms (JOS-112). Omitted ⇒ unbounded (the unit
    * tests, whose probes never block). When set, `discoverEqRoot` stops probing candidates once
@@ -291,6 +301,20 @@ export function tailSurvivesRootChange(
 }
 
 /**
+ * The drive-sweep tier of `discoverEqRoot`'s candidate list: `<drive>\<subpath>` for every fixed
+ * drive × every Daybreak subpath (win32), plus whatever `linuxPrefixCandidates` resolved (Linux;
+ * already-resolved absolute paths, D3/D4 — see discoveryLinux.ts). Split out of `discoverEqRoot`
+ * itself purely to keep that function's branching flat; the ordering contract is unchanged.
+ */
+function pushSweepCandidates(probes: DiscoveryProbes, push: (c: string | undefined | null) => void): void {
+  for (const drive of probes.fixedDrives()) {
+    const d = drive.replace(/[\\/]+$/, '')
+    for (const sub of DAYBREAK_SUBPATHS) push(`${d}\\${sub}`)
+  }
+  for (const c of probes.linuxPrefixCandidates?.() ?? []) push(c)
+}
+
+/**
  * Pure ordered discovery: return the first candidate root whose `Logs` dir holds
  * an `eqlog_*.txt`, or null if none match. Candidates, in order:
  *   1. `extraCandidates()` (env override, then registry InstallLocations)
@@ -318,12 +342,7 @@ export function discoverEqRoot(probes: DiscoveryProbes): string | null {
   for (const c of probes.extraCandidates()) push(c)
   // Skip generating (and thus probing) the drive-sweep candidates once we are already over
   // budget — the env/registry phase alone can spend it on a pathological Uninstall hive.
-  if (!overBudget()) {
-    for (const drive of probes.fixedDrives()) {
-      const d = drive.replace(/[\\/]+$/, '')
-      for (const sub of DAYBREAK_SUBPATHS) push(`${d}\\${sub}`)
-    }
-  }
+  if (!overBudget()) pushSweepCandidates(probes, push)
 
   for (const c of candidates) {
     // Check BEFORE each probe: a `readdir` on an offline share can take tens of seconds, so the

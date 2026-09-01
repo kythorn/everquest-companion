@@ -56,7 +56,8 @@ Files this port edits, and must therefore expect conflicts in (keep hunks minima
 
 | file | the hunk |
 |---|---|
-| `src/main/log/discovery.ts` | one branch into the Linux candidate generator |
+| `src/main/log/discovery.ts` | one optional `linuxPrefixCandidates` probe field; the drive sweep split into a helper to keep the branching flat. Absent ⇒ byte-identical behaviour, so win32 and every existing test are untouched |
+| `src/main/log/config.ts` | wires that probe to the real filesystem — it is the only place `DiscoveryProbes` is actually assembled, so the field would never fire without it. Guarded `process.platform === 'win32' ? [] : …` |
 | `src/main/presenceNative.ts` | one branch in `loadPresenceNative()` |
 | `electron-builder.yml` | a `linux:` block; the onnxruntime/koffi platform filters |
 | `package.json` | `dist:linux` script |
