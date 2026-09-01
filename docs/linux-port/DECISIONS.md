@@ -91,6 +91,26 @@ and no release feed for this fork. The app already disables the updater when not
 
 Revisit if the port is ever handed to someone else. Nothing in W1–W3 depends on it.
 
+## D9 — Nothing goes upstream until the owner has been asked
+**Decided (owner, 2026-09-01).** Every fix stays on this fork's `linux` branch. No pull requests
+to `jmoyers/everquest-companion`, including the ones that are plainly Windows bug fixes and would
+be accepted on their own merits.
+
+The reason is not technical. Upstream is one person's project with a strong, documented working
+model, and a Linux port asks him to take on a platform he does not run and cannot test. That is a
+conversation to have with him directly, not something to open with a diff. An unsolicited PR —
+even a good one — spends his attention and pre-empts the decision that is his to make.
+
+**Consequence for [`BACKPORT.md`](BACKPORT.md)'s "upstream aggressively" section:** it remains the
+correct strategy and the cheapest merge surface we have, and it is on hold. Nothing about how we
+write the code changes — keeping every fix upstreamable is still the rule, because it is also what
+keeps merges cheap for us. We simply do not send them yet.
+
+**Design consequence, worth doing now while it is free:** name seams by FUNCTION, not by platform.
+`linuxPrefixCandidates` is really "additional fully-resolved candidate roots". Named generically,
+it is an extension point upstream could take without adopting Linux at all, and our Linux code
+stays entirely on our side of it. Cheap now, awkward after the branch has history.
+
 ---
 
 # Open

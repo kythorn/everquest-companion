@@ -157,6 +157,11 @@ manual merge into a dated notification naming the commit that did it.
 
 ## Upstream everything that is not Linux-specific
 
+> **ON HOLD (owner, 2026-09-01 — [D9](DECISIONS.md#d9--nothing-goes-upstream-until-the-owner-has-been-asked)).**
+> No PRs to upstream until the owner has spoken to the maintainer directly. The strategy below is
+> still correct and still governs how we WRITE code — keeping every fix upstreamable is what keeps
+> our own merges cheap. We just do not send them yet.
+
 Every commit upstream accepts is merge surface **deleted permanently**. That makes upstreaming the
 highest-return maintenance activity available, well above tidying anything on our side.
 
