@@ -101,6 +101,9 @@ import * as koffi from 'koffi'
 // The client's image name, imported rather than respelled: the running scan and the
 // "is this window EverQuest" predicate must never disagree about what the game is called.
 import { EQ_CLIENT_EXES } from './presenceProtocol'
+// This port's own file (docs/linux-port/BACKPORT.md's ownership ledger) — see the one-line branch
+// in `loadPresenceNative()` below and that file's header for the whole X11 story.
+import { loadPresenceNativeLinux } from './presenceNativeLinux'
 
 /**
  * What the watcher can ask Windows. Deliberately four methods and no state: this module is a
@@ -222,6 +225,12 @@ const MAX_PIDS = 4096
  * app's own thread with it.
  */
 export function loadPresenceNative(): PresenceNative {
+  // Linux gets its own file (`presenceNativeLinux.ts`, this port's — see
+  // docs/linux-port/DECISIONS.md D5 and BACKPORT.md's ownership ledger): X11 via koffi against
+  // libX11 rather than Win32 against user32/kernel32/psapi, and it throws the same way this
+  // function does when the surface will not load (a missing library, or — on purpose — Wayland).
+  if (process.platform === 'linux') return loadPresenceNativeLinux()
+
   const user32 = koffi.load('user32.dll')
   const kernel32 = koffi.load('kernel32.dll')
   const psapi = koffi.load('psapi.dll')
