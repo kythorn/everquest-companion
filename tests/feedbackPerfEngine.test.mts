@@ -22,10 +22,12 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import {
   ENGINE_BUDGETS,
+  ENGINE_CLOCK_SOURCES,
   ENGINE_STATES,
   ENGINE_VERDICTS,
   MAX_ENGINE_COUNT,
   MAX_ENGINE_MS,
+  MAX_ENGINE_UP_MS,
   foldPerfEngine,
   formatPerfEngine,
   validatePerfEngine,
@@ -50,8 +52,14 @@ function live(over: Partial<EngineFoldInput> = {}): EngineFoldInput {
       uptimeMs: 412_004,
       events: 139_864,
       lastEventTs: NOW - 1_400,
-      // The absolute path and the log clock ride the op. They must not ride the report.
-      ...({ mark: { log: A_REAL_LOG_PATH, offset: 219_000_000 } } as object),
+      clockSource: 'host',
+      clockSkewMs: 412,
+      // The absolute path, the log clock and the ZONE NAME ride the op. None of them may ride the
+      // report — the zone is a string, and this block carries no strings.
+      ...({
+        mark: { log: A_REAL_LOG_PATH, offset: 219_000_000 },
+        clockZone: 'America/Los_Angeles'
+      } as object),
       ingest: { spellDbMs: 386, scanMs: 52_500, scanBytes: 219_000_000 },
       serve: [
         { frames: 46, payloadWeight: 21_714, foldToFrameUsMax: 29 },
@@ -82,8 +90,12 @@ test('THE BRIGHT LINE: no path and no log clock survives the fold, checked over 
   assert.ok(!json.includes('EverQuest'), `an install path reached the report: ${json}`)
   assert.ok(!json.includes('Primitive'), `a character name reached the report: ${json}`)
   assert.ok(!json.includes(String(NOW - 1_400)), `the log's own clock reached the report: ${json}`)
-  // …and what DID survive is the diagnostic half of the same reading: how far behind the fold was.
+  assert.ok(!json.includes('America'), `the zone NAME reached the report: ${json}`)
+  // …and what DID survive is the diagnostic half of the same reading: how far behind the fold was,
+  // which clock it was on, and how far that clock disagreed with the reporter's.
   assert.equal(block.behindMs, 1_400)
+  assert.equal(block.clockSource, 'host')
+  assert.equal(block.clockSkewMs, 412)
 })
 
 test('THE BRIGHT LINE: every value on the block is a number or a member of a closed set', () => {
@@ -95,6 +107,10 @@ test('THE BRIGHT LINE: every value on the block is a number or a member of a clo
     if (key === 'budgets') continue
     if (key === 'state') {
       assert.ok((ENGINE_STATES as readonly string[]).includes(value as string), key)
+      continue
+    }
+    if (key === 'clockSource') {
+      assert.ok((ENGINE_CLOCK_SOURCES as readonly string[]).includes(value as string), key)
       continue
     }
     assert.equal(typeof value, 'number', `${key} is not a number`)
@@ -129,6 +145,8 @@ test('an idle engine reports its state and its uptime and claims nothing else', 
   for (const key of [
     'events',
     'behindMs',
+    'clockSource',
+    'clockSkewMs',
     'spellDbMs',
     'scanMs',
     'scanKb',
@@ -343,6 +361,8 @@ test('the line reads as a sentence and states the verdicts last', () => {
   assert.match(line, /^live up 412s/)
   assert.match(line, /139,864 events/)
   assert.match(line, /1400ms behind/)
+  assert.match(line, /clock host/)
+  assert.match(line, /skew 412ms/)
   assert.match(line, /scan 52500ms of 213867kB/)
   assert.match(line, /158 frames \/ 78kB worst 56012us/)
   assert.match(line, /3 windows \(1 quiet\)/)
@@ -352,4 +372,84 @@ test('the line reads as a sentence and states the verdicts last', () => {
 test('an engine that answered but reported no budgets says so rather than printing nothing', () => {
   const block: FeedbackPerfEngine = { state: 'starting', upMs: 20, budgets: [] }
   assert.equal(formatPerfEngine(block), 'starting up 0s · no budgets reported')
+})
+
+// ---- 7. the clock the fold is on (JOS-536) -----------------------------------------------------
+
+test('THE WINE REPORT: a seven-hour skew rides SIGNED and says the zone was guessed', () => {
+  // The three 1.15.0 reports this field exists for. Every one showed the engine "behind" the log by
+  // an exact whole number of hours — 25,217,204 ms on the first — which is a timezone, not a lag.
+  // The sign is half the finding: west of UTC reads behind, east reads ahead.
+  const skew = -7 * 60 * 60 * 1000
+  const block = foldPerfEngine(
+    live({
+      snapshot: {
+        status: 'live',
+        uptimeMs: 90_000,
+        events: 4_200,
+        clockSource: 'utc',
+        clockSkewMs: skew,
+        ingest: {},
+        serve: []
+      }
+    })
+  )
+  assert.ok(block !== null)
+  assert.equal(block.clockSource, 'utc', 'neither the app nor the probe named a zone')
+  assert.equal(block.clockSkewMs, skew, 'negative survives — this is a distance, not a cost')
+  // …and it survives the validator, which is the half a signed field would otherwise fail.
+  const res = validatePerfEngine(JSON.parse(JSON.stringify(block)) as unknown)
+  assert.equal(res.ok, true)
+  assert.equal(res.ok ? res.value?.clockSkewMs : 0, skew)
+  assert.match(formatPerfEngine(block), /clock utc · skew -25200000ms/)
+})
+
+test('a clock source this build has never heard of is dropped at both ends', () => {
+  const block = foldPerfEngine(
+    live({
+      snapshot: {
+        status: 'live',
+        uptimeMs: 10,
+        clockSource: 'atomic',
+        clockSkewMs: 4,
+        ingest: {},
+        serve: []
+      }
+    })
+  )
+  assert.ok(block !== null)
+  assert.ok(!('clockSource' in block), 'an unknown member is not a string channel')
+  assert.equal(block.clockSkewMs, 4, '…and the reading beside it is still carried')
+  // The validator drops it too rather than refusing the whole block: an engine ahead of the app is
+  // a client with a field this build cannot read, not a forgery.
+  const res = validatePerfEngine({ ...block, clockSource: 'atomic' })
+  assert.equal(res.ok, true)
+  assert.equal(res.ok ? res.value?.clockSource : 'x', undefined)
+})
+
+test('a forged skew is a NAMED 400, in both directions', () => {
+  const good = foldPerfEngine(live())
+  assert.ok(good !== null)
+  for (const raw of [12.7, MAX_ENGINE_UP_MS + 1, -(MAX_ENGINE_UP_MS + 1)]) {
+    const res = validatePerfEngine({ ...good, clockSkewMs: raw })
+    assert.equal(res.ok, false, `${raw} was accepted`)
+    assert.equal(res.ok ? '' : res.field, 'env.perf.engine.clockSkewMs')
+  }
+})
+
+test('an engine with no skew yet claims none — the scan measures nothing', () => {
+  const block = foldPerfEngine(
+    live({
+      snapshot: {
+        status: 'folding',
+        uptimeMs: 1_204,
+        clockSource: 'platform',
+        ingest: { spellDbMs: 386 },
+        serve: []
+      }
+    })
+  )
+  assert.ok(block !== null)
+  assert.equal(block.clockSource, 'platform')
+  assert.ok(!('clockSkewMs' in block), 'a running scan has measured no skew')
 })

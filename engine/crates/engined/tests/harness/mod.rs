@@ -456,13 +456,24 @@ pub fn attach(id: i64, log_path: &str) -> ClientMessage {
 /// persisted artifacts out of it at attach and writes them back on its own cadence.
 #[must_use]
 pub fn attach_with_state(id: i64, log_path: &str, state_dir: Option<&str>) -> ClientMessage {
+    attach_params(
+        id,
+        SessionAttachParams {
+            log_path: log_path.to_owned(),
+            state_dir: state_dir.map(str::to_owned),
+            clock: None,
+        },
+    )
+}
+
+/// The attach with every field spelled out — the seam the clock hint is tested through, since no
+/// other suite has an opinion about which zone the engine resolves.
+#[must_use]
+pub fn attach_params(id: i64, params: SessionAttachParams) -> ClientMessage {
     ClientMessage::SessionAttachRequest(SessionAttachRequest {
         id: RequestId(id),
         op: SessionAttachRequestOp::SessionAttach,
-        params: SessionAttachParams {
-            log_path: log_path.to_owned(),
-            state_dir: state_dir.map(str::to_owned),
-        },
+        params,
     })
 }
 

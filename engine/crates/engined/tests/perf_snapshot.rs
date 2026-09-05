@@ -18,12 +18,13 @@
 mod harness;
 
 use harness::{
-    attach, perf_budgets, perf_snapshot, perf_timeline, subscribe, unsubscribe, Client, Engine,
-    PATIENCE,
+    attach, attach_params, perf_budgets, perf_snapshot, perf_timeline, subscribe, unsubscribe,
+    Client, Engine, PATIENCE,
 };
 use protocol::generated::{
-    EngineMessage, PerfBudgetId, PerfBudgetVerdict, PerfBudgetsResult, PerfServeSource,
-    PerfSnapshotResult, PerfSnapshotResultStatus, PerfTimelineResult, ReplyResult,
+    ClientMessage, ClockHint, EngineMessage, ErrorCode, PerfBudgetId, PerfBudgetVerdict,
+    PerfBudgetsResult, PerfServeSource, PerfSnapshotResult, PerfSnapshotResultClockSource,
+    PerfSnapshotResultStatus, PerfTimelineResult, ReplyResult, SessionAttachParams,
 };
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -103,6 +104,14 @@ impl Drop for Staged {
 /// announcement, a subscription's reset, a progress tick — is skipped rather than asserted about:
 /// this suite is about one reply, and the ordering of the rest is `tests/ingest.rs`'s claim.
 fn ask_perf(client: &mut Client, id: i64) -> PerfSnapshotResult {
+    try_ask_perf(client, id).unwrap_or_else(|why| panic!("perf.snapshot was unavailable: {why}"))
+}
+
+/// [`ask_perf`] with the one refusal a healthy engine can give surfaced as `Err`: the fold was busy
+/// past the world's patience (a spell catalog loading on a starved CI runner is enough). A caller
+/// waiting for a condition reads that as "not yet"; every other refusal is still a panic, because
+/// none of them means anything but a broken test.
+fn try_ask_perf(client: &mut Client, id: i64) -> Result<PerfSnapshotResult, String> {
     client.send(&perf_snapshot(id));
     loop {
         match client.recv() {
@@ -110,9 +119,12 @@ fn ask_perf(client: &mut Client, id: i64) -> PerfSnapshotResult {
                 let ReplyResult::PerfSnapshotResult(result) = reply.result else {
                     panic!("a perf snapshot result, got {:?}", reply.result);
                 };
-                return result;
+                return Ok(result);
             }
             EngineMessage::ErrorReply(refusal) if *refusal.id == id => {
+                if matches!(refusal.error.code, ErrorCode::Unavailable) {
+                    return Err(refusal.error.message);
+                }
                 panic!("perf.snapshot was refused: {:?}", refusal.error);
             }
             _ => {}
@@ -185,13 +197,20 @@ fn until(
     let deadline = Instant::now() + PATIENCE;
     loop {
         *id += 1;
-        let perf = ask_perf(client, *id);
-        if ready(&perf) {
-            return perf;
-        }
+        // A fold too busy to answer inside the world's patience is "not yet" exactly like an
+        // answer that is not ready — the deadline below is the only verdict this loop gives.
+        let last = match try_ask_perf(client, *id) {
+            Ok(perf) => {
+                if ready(&perf) {
+                    return perf;
+                }
+                format!("{perf:?}")
+            }
+            Err(why) => why,
+        };
         assert!(
             Instant::now() < deadline,
-            "waited {PATIENCE:?} for {what}; the engine last said {perf:?}"
+            "waited {PATIENCE:?} for {what}; the engine last said {last}"
         );
         std::thread::sleep(std::time::Duration::from_millis(50));
     }
@@ -498,4 +517,160 @@ fn the_three_perf_ops_answer_on_one_connection_and_none_disturbs_the_others() {
         "reading the budgets did not reset the process clock"
     );
     assert_eq!(second.serve.len(), first.serve.len());
+}
+
+// ---- the clock the fold is on ------------------------------------------------------------------
+
+/// An offset this machine is provably NOT on, so the platform probe cannot claim agreement with it.
+/// Both candidates are half-hour offsets, which no zone the CI fleet runs in uses.
+fn a_foreign_offset_min() -> i32 {
+    const CANDIDATES: [i32; 2] = [330, 210];
+    let here = eqlog::platform_timezone()
+        .map(|tz| eqlog::Zone::Iana(tz).offset_min_at_ms(wall_clock_ms()));
+    CANDIDATES
+        .into_iter()
+        .find(|c| here != Some(*c))
+        .expect("this machine cannot be on both offsets at once")
+}
+
+fn wall_clock_ms() -> i64 {
+    i64::try_from(
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("a clock after 1970")
+            .as_millis(),
+    )
+    .expect("an instant that fits")
+}
+
+/// One EQ-stamped line, written in a stated zone. The weekday is not parsed, so `Xxx` is honest.
+fn stamped(zone: eqlog::Zone, ms: i64, text: &str) -> String {
+    const MONTHS: [&str; 12] = [
+        "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+    ];
+    let civil = eqlog::Clock::new(zone)
+        .civil(ms)
+        .expect("a representable instant");
+    let month = MONTHS[(civil.month as usize).saturating_sub(1).min(11)];
+    format!(
+        "[Xxx {month} {day:02} {hour:02}:{minute:02}:{second:02} {year}] {text}\n",
+        day = civil.day,
+        hour = civil.hour,
+        minute = civil.minute,
+        second = civil.second,
+        year = civil.year
+    )
+}
+
+fn attach_with_clock(id: i64, log_path: &str, clock: Option<ClockHint>) -> ClientMessage {
+    attach_params(
+        id,
+        SessionAttachParams {
+            log_path: log_path.to_owned(),
+            state_dir: None,
+            clock,
+        },
+    )
+}
+
+#[test]
+fn an_attach_whose_zone_name_disagrees_with_its_offset_resolves_the_offset() {
+    // THE AGREEMENT RULE ON THE WIRE. The offset came from the same ICU clock that stamped the log;
+    // the name is a lookup that can be wrong. `Europe/Berlin` is east of UTC in every season, so it
+    // can never carry a half-hour offset â€” and neither can this machine's own probe, by
+    // construction. The answer states the fixed offset it fell through to, and says `offset` so a
+    // bug report can tell a told zone from a guessed one.
+    let offset_min = a_foreign_offset_min();
+    let staged = Staged::new("clock-offset");
+    let engine = Engine::start();
+    let mut client = engine.connected();
+    client.send(&attach_with_clock(
+        1,
+        &staged.log().to_string_lossy(),
+        Some(ClockHint {
+            tz: Some("Europe/Berlin".to_owned()),
+            utc_offset_min: Some(i64::from(offset_min)),
+        }),
+    ));
+
+    let mut id = 200;
+    let perf = until(&mut client, &mut id, "the fold to go live", |p| {
+        p.status == PerfSnapshotResultStatus::Live
+    });
+    assert_eq!(
+        perf.clock_source,
+        Some(PerfSnapshotResultClockSource::Offset)
+    );
+    assert_eq!(
+        perf.clock_zone,
+        Some(
+            eqlog::Zone::fixed(offset_min)
+                .expect("a representable offset")
+                .name()
+        )
+    );
+}
+
+#[test]
+fn an_attach_whose_zone_name_agrees_is_taken_at_its_word() {
+    // UTC is the one name every machine can be told and every test can check: the hint agrees with
+    // itself, so rung (a) answers and the engine says it was TOLD rather than that it guessed.
+    let staged = Staged::new("clock-host");
+    let engine = Engine::start();
+    let mut client = engine.connected();
+    client.send(&attach_with_clock(
+        1,
+        &staged.log().to_string_lossy(),
+        Some(ClockHint {
+            tz: Some("UTC".to_owned()),
+            utc_offset_min: Some(0),
+        }),
+    ));
+
+    let mut id = 300;
+    let perf = until(&mut client, &mut id, "the fold to go live", |p| {
+        p.status == PerfSnapshotResultStatus::Live
+    });
+    assert_eq!(perf.clock_source, Some(PerfSnapshotResultClockSource::Host));
+    assert_eq!(perf.clock_zone.as_deref(), Some("UTC"));
+    // The scan measured no skew: the age of a line from a committed fixture is a fact about when
+    // somebody played, never about a clock.
+    assert_eq!(perf.clock_skew_ms, None);
+}
+
+#[test]
+fn a_live_line_stamped_now_reports_a_skew_of_about_nothing() {
+    // THE SENTINEL'S HAPPY CASE, and the measurement the broken one is read against. The log is
+    // stamped in the zone the engine is told to resolve, so a line appended now is seconds old and
+    // the signed distance between the two clocks is about zero. Under the UTC fallback this same
+    // reading was a whole number of hours.
+    let staged = Staged::new("clock-skew");
+    let engine = Engine::start();
+    let mut client = engine.connected();
+    client.send(&attach_with_clock(
+        1,
+        &staged.log().to_string_lossy(),
+        Some(ClockHint {
+            tz: Some("UTC".to_owned()),
+            utc_offset_min: Some(0),
+        }),
+    ));
+
+    let mut id = 400;
+    until(&mut client, &mut id, "the fold to go live", |p| {
+        p.status == PerfSnapshotResultStatus::Live
+    });
+    staged.append(&stamped(
+        eqlog::Zone::Iana(eqlog::Tz::UTC),
+        wall_clock_ms(),
+        "You have looted a Golden Efreeti Boots from Efreeti Lord Djarn corpse.",
+    ));
+    let perf = until(&mut client, &mut id, "the tail to measure a skew", |p| {
+        p.clock_skew_ms.is_some()
+    });
+    let skew = perf.clock_skew_ms.expect("the tail measured one");
+    assert!(
+        skew.abs() < 60_000,
+        "a line stamped in the resolved zone is seconds old, not {skew} ms"
+    );
 }

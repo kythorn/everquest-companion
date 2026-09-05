@@ -28,6 +28,7 @@ use protocol::generated::{
 };
 use protocol::generated::{LogsListRequestOp, LogsListResult, LogsSetDirRequestOp};
 
+use crate::clock::zone_hint;
 use crate::ingest::CombatOpts;
 use crate::world::{CombatAnswer, ListenerId, PerfAnswer, SnapshotAnswer, World};
 
@@ -223,13 +224,7 @@ impl Session {
 
             // Attach bumps the generation, announces it, and starts an ingest over the named log:
             // scan at full speed, then tail live.
-            ClientMessage::SessionAttachRequest(request) => reply(
-                request.id,
-                ReplyResult::AttachResult(world.attach(
-                    &request.params.log_path,
-                    request.params.state_dir.as_deref(),
-                )),
-            ),
+            ClientMessage::SessionAttachRequest(request) => attached(world, request),
 
             // Progress IS a subscription — to the connection-wide progress channel — so it is
             // acknowledged with a `SubscribeAck`. Its frames are `EpochMessage`s carrying
@@ -789,6 +784,20 @@ impl Session {
     }
 }
 
+/// Attach bumps the generation, announces it, and starts an ingest over the named log: scan at full
+/// speed, then tail live. Three params come off the request and are marshalled here rather than in
+/// `dispatch`'s arm, which stays one line like every other.
+fn attached(world: &World, request: protocol::generated::SessionAttachRequest) -> Outcome {
+    reply(
+        request.id,
+        ReplyResult::AttachResult(world.attach(
+            &request.params.log_path,
+            request.params.state_dir.as_deref(),
+            zone_hint(request.params.clock.as_ref()),
+        )),
+    )
+}
+
 /// The health status as the mark ack spells it.
 ///
 /// The two generated enums have the same five members, so this mapping is exhaustive by the
@@ -1144,9 +1153,7 @@ mod tests {
     /// Every test here is about a shape rather than a fold; a real ingest would make them depend on
     /// a file, a thread and a spell DB none of them says anything about.
     fn table() -> (World, Session) {
-        let world = World::with_ingest(std::sync::Arc::new(
-            |_world, _generation, _log, _state_dir| {},
-        ));
+        let world = World::with_ingest(std::sync::Arc::new(|_world, _generation, _attach| {}));
         let session = Session::new(world.join().id);
         (world, session)
     }
@@ -1172,7 +1179,7 @@ mod tests {
     #[test]
     fn health_reports_the_worlds_generation() {
         let (world, mut session) = table();
-        world.attach(A_LOG, None);
+        world.attach(A_LOG, None, eqlog::ZoneHint::default());
         let messages = sent(session.dispatch(
             &world,
             ClientMessage::SessionHealthRequest(SessionHealthRequest {
@@ -1201,6 +1208,7 @@ mod tests {
                 params: SessionAttachParams {
                     log_path: "C:/nowhere/eqlog_Primitive_freeport.txt".to_owned(),
                     state_dir: None,
+                    clock: None,
                 },
             }),
         ));
@@ -1341,7 +1349,7 @@ mod tests {
         // A world whose attaches start nothing has no ingest to ask, and the two refusals mean
         // different things to a client.
         let (world, mut session) = table();
-        world.attach(A_LOG, None);
+        world.attach(A_LOG, None, eqlog::ZoneHint::default());
         let messages = sent(session.dispatch(
             &world,
             ClientMessage::ModuleSnapshotRequest(ModuleSnapshotRequest {
@@ -1373,7 +1381,7 @@ mod tests {
 
     fn refusal_for(message: ClientMessage) -> ErrorReply {
         let (world, mut session) = table();
-        world.attach(A_LOG, None);
+        world.attach(A_LOG, None, eqlog::ZoneHint::default());
         let messages = sent(session.dispatch(&world, message));
         let [EngineMessage::ErrorReply(refusal)] = messages.as_slice() else {
             panic!("a refusal");
@@ -1446,6 +1454,17 @@ mod tests {
                 limit,
             },
         })
+    }
+
+    /// Attach to the log inside a staged install. The client table is derived from the log's path,
+    /// which is why every spell-search test attaches before it asks.
+    fn attach_install(world: &World, dir: &std::path::Path) {
+        let log = dir.join("Logs").join("eqlog_Primitive_freeport.txt");
+        world.attach(
+            log.to_string_lossy().as_ref(),
+            None,
+            eqlog::ZoneHint::default(),
+        );
     }
 
     /// A staged install: a directory with a `Logs/` beside a hand-authored `spells_us.txt` and
@@ -1523,7 +1542,7 @@ mod tests {
         // a list that says so — naming the path it looked at — never an error a surface has to
         // translate and an error log has to collect.
         let (world, mut session) = table();
-        world.attach(A_LOG, None);
+        world.attach(A_LOG, None, eqlog::ZoneHint::default());
         let messages = sent(session.dispatch(&world, spells_search(64, Some("tap"), &[], None)));
         let [EngineMessage::Reply(reply)] = messages.as_slice() else {
             panic!("a reply, got {messages:?}");
@@ -1545,13 +1564,7 @@ mod tests {
     fn a_tap_search_answers_off_the_players_own_two_files() {
         let dir = staged_install("tap");
         let (world, mut session) = table();
-        world.attach(
-            dir.join("Logs")
-                .join("eqlog_Primitive_freeport.txt")
-                .to_string_lossy()
-                .as_ref(),
-            None,
-        );
+        attach_install(&world, &dir);
         let messages = sent(session.dispatch(
             &world,
             spells_search(62, Some("tap"), &[ClassAbbr::Shd, ClassAbbr::Brd], None),
@@ -1591,13 +1604,7 @@ mod tests {
     fn an_over_long_limit_is_clamped_rather_than_refused_and_the_reply_says_so() {
         let dir = staged_install("clamp");
         let (world, mut session) = table();
-        world.attach(
-            dir.join("Logs")
-                .join("eqlog_Primitive_freeport.txt")
-                .to_string_lossy()
-                .as_ref(),
-            None,
-        );
+        attach_install(&world, &dir);
         let messages = sent(session.dispatch(&world, spells_search(63, None, &[], Some(100_000))));
         let [EngineMessage::Reply(reply)] = messages.as_slice() else {
             panic!("a reply");
@@ -1619,13 +1626,7 @@ mod tests {
         // this list must be allowed to be empty. Ten thousand copies of a class cost what one does.
         let dir = staged_install("dedupe");
         let (world, mut session) = table();
-        world.attach(
-            dir.join("Logs")
-                .join("eqlog_Primitive_freeport.txt")
-                .to_string_lossy()
-                .as_ref(),
-            None,
-        );
+        attach_install(&world, &dir);
         let mut answer = |classes: &[ClassAbbr]| {
             let messages = sent(session.dispatch(&world, spells_search(65, None, classes, None)));
             let [EngineMessage::Reply(reply)] = messages.as_slice() else {
@@ -1872,7 +1873,7 @@ mod tests {
 
     fn knowledge_table() -> (World, Session, crate::world::Membership) {
         let world = World::with_parts(
-            std::sync::Arc::new(|_world, _generation, _log, _state_dir| {}),
+            std::sync::Arc::new(|_world, _generation, _attach| {}),
             std::sync::Arc::new(knowledge::Corpus::new()),
         );
         let membership = world.join();

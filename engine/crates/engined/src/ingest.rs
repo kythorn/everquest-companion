@@ -25,11 +25,11 @@ use protocol::generated::HealthResultStatus;
 use eqlog::event::Ev;
 use eqlog::parse::Parser;
 use eqlog::tail::{FileTail, TailCore, TailStart, DEFAULT_POLL_INTERVAL, LIVE};
-use eqlog::{host_timezone, spelldb, Clock};
+use eqlog::{spelldb, Clock};
 
-use crate::spawn::DIAGNOSTIC_PREFIX;
 use crate::views::{self, Meter};
 use crate::world::{FoldMark, World};
+use crate::{clock, spawn::DIAGNOSTIC_PREFIX};
 
 /// How many bytes one scan read asks for.
 ///
@@ -679,15 +679,26 @@ pub fn counting_sinks() -> SinkFactory {
 /// single injected decision. Production hands it [`starter`]; `world.rs`'s own unit tests hand it a
 /// no-op, which is how the epoch and subscription laws are proven without a fold in the room.
 ///
-/// The fourth argument is the app's `stateDir`, `None` for every caller that did not push one. See
-/// [`crate::state`] for why absent means no persistence at all rather than a default location.
-pub type Starter = Arc<dyn Fn(&World, u64, PathBuf, Option<PathBuf>) + Send + Sync>;
+/// The third argument is everything the attach carried — see [`Attach`].
+pub type Starter = Arc<dyn Fn(&World, u64, Attach) + Send + Sync>;
+
+/// What one attach hands its ingest. The three facts travel together from `session.attach` to the
+/// parser, and one struct is what stops a call site dropping the one it has no use for.
+#[derive(Debug, Clone, Default)]
+pub struct Attach {
+    /// The log to fold.
+    pub log: PathBuf,
+    /// The app's `userData`, or `None` for no persistence at all. See [`crate::state`].
+    pub state_dir: Option<PathBuf>,
+    /// What the host says about its own clock. Empty means the engine resolves alone.
+    pub clock: eqlog::ZoneHint,
+}
 
 /// The starter a real engine uses: one ingest thread per attach, folding into `sinks`.
 #[must_use]
 pub fn starter(sinks: SinkFactory) -> Starter {
-    Arc::new(move |world, generation, log, state_dir| {
-        start(world, generation, log, state_dir, Arc::clone(&sinks));
+    Arc::new(move |world, generation, attach| {
+        start(world, generation, attach, Arc::clone(&sinks));
     })
 }
 
@@ -777,23 +788,18 @@ enum Ended {
 ///
 /// A failure to spawn is not a dead engine: the epoch has already been bumped and announced, and
 /// all that is left is to say the world holds no fold, which is what `idle` means.
-pub fn start(
-    world: &World,
-    generation: u64,
-    log: PathBuf,
-    state_dir: Option<PathBuf>,
-    sinks: SinkFactory,
-) {
+pub fn start(world: &World, generation: u64, attach: Attach, sinks: SinkFactory) {
     let owner = world.clone();
     let spawned = thread::Builder::new()
         .name("engined-ingest".to_owned())
         .spawn(move || {
+            let log = attach.log.clone();
             // A panicking fold must not take the process: one bad line costs the fold and nothing
             // else, the same blast-radius rule `World::lock` keeps for a poisoned mutex. The epoch
             // is untouched — a fold that died created no new generation, and the client's state is
             // still the one it was told about.
             let ending = catch_unwind(AssertUnwindSafe(|| {
-                run(&owner, generation, &log, state_dir.as_deref(), &sinks)
+                run(&owner, generation, &attach, &sinks)
             }));
             match ending {
                 Ok(Ok(Ended::Preempted)) => {}
@@ -821,13 +827,8 @@ pub fn start(
 }
 
 /// Open the log, fold its history, then follow it. Returns when this turn no longer owns the world.
-fn run(
-    world: &World,
-    generation: u64,
-    log: &Path,
-    state_dir: Option<&Path>,
-    sinks: &SinkFactory,
-) -> io::Result<Ended> {
+fn run(world: &World, generation: u64, attach: &Attach, sinks: &SinkFactory) -> io::Result<Ended> {
+    let log = attach.log.as_path();
     // Attaching is exactly "opening the file and building what a fold depends on" — the spell DB,
     // the character and the registry. Nothing is folded until all of it exists, and the whole of it
     // happens inside this window.
@@ -858,8 +859,12 @@ fn run(
     // early costs a struct.
     let mut serving = Serving::new();
     serving.cost.spell_db_ms = Some(spell_db_ms);
+    // THE ZONE IS RESOLVED ONCE PER ATTACH, BEFORE THE FIRST STAMP. A log stamp is a zone-less local
+    // wall clock, so getting this wrong moves every event by a whole number of hours and the fight
+    // lifecycle — which compares the log's clock against this process's — closes every beat.
+    let resolved = clock::resolve_and_report(world, generation, &attach.clock);
     let parser = Parser::new(
-        Clock::new(host_timezone()),
+        Clock::new(resolved.zone),
         Some(Arc::clone(&db)),
         character.clone(),
     );
@@ -874,7 +879,7 @@ fn run(
         db: Some(&db),
         clock: parser.clock(),
         attached_at_ms: wall_clock_ms(),
-        state_dir,
+        state_dir: attach.state_dir.as_deref(),
     });
 
     // App knowledge, applied before the first byte. A `*.define` pushed before this attach — an
@@ -1013,6 +1018,9 @@ fn run(
     // because an event whose arrival was announced by nobody is an event the client cannot know
     // about at all.
     let mut announced = seq;
+    // THE SKEW SENTINEL SPEAKS ONCE PER GENERATION. A resolved zone does not change under a fold, so
+    // a second line would be the same line, and this one rides the tail's own poll loop.
+    let mut skew_said = false;
     loop {
         if !world.owns(generation) {
             return Ok(Ended::Preempted);
@@ -1056,6 +1064,7 @@ fn run(
         // bytes read, which is 100 exactly when the game is not mid-line.
         if seq != announced && cadence.due() {
             let live_total = tail.read_offset();
+            let skew_ms = clock::skew_of(sink.report().last_ts, &resolved, &mut skew_said);
             let advanced = FoldMark {
                 checkpoint: tail.checkpoint_offset(),
                 events: seq,
@@ -1064,6 +1073,7 @@ fn run(
                 // once EverQuest is appending to it.
                 total: live_total,
                 last_ts: sink.report().last_ts,
+                skew_ms,
                 // The tail says so, with the same constant it stamps on every event it folds. The
                 // frame is otherwise indistinguishable from the last frame of a scan — `pct` at its
                 // ceiling, the count moving — so a client cannot tell them apart without it.
@@ -1389,6 +1399,8 @@ fn mark(core: &TailCore, size: u64, events: i64, sink: &dyn EventSink) -> FoldMa
         // units, which `pct` alone cannot reconstruct.
         total,
         last_ts: sink.report().last_ts,
+        // A historical line's age is not a clock reading — see the tail's own measurement.
+        skew_ms: None,
         // The scan's own stamp. This helper is the scan's and only the scan's — the tail builds its
         // `FoldMark` inline because its denominator is its own read offset — so the constant is
         // honest here rather than a parameter every caller has to be trusted to pass correctly.
@@ -1835,7 +1847,7 @@ mod tests {
         let ledger = Arc::new(Ledger::default());
         let world = recording_world(&ledger, None);
 
-        world.attach(&log.to_string_lossy(), None);
+        world.attach(&log.to_string_lossy(), None, eqlog::ZoneHint::default());
         settle("the fold to land", || {
             matches!(world.health().status, HealthResultStatus::Live)
         });
@@ -1890,14 +1902,14 @@ mod tests {
         );
 
         // The first fold reaches its first event and stops there, holding the world.
-        let first = world.attach(&log.to_string_lossy(), None);
+        let first = world.attach(&log.to_string_lossy(), None, eqlog::ZoneHint::default());
         assert_eq!(*first.epoch, 2);
         settle("the first fold to reach its first event", || {
             !ledger.of(0).is_empty()
         });
 
         // The preemption. Last pick wins, and the pick that lost is still standing at the gate.
-        let second = world.attach(&log.to_string_lossy(), None);
+        let second = world.attach(&log.to_string_lossy(), None, eqlog::ZoneHint::default());
         assert_eq!(*second.epoch, 3, "the generation strictly increases");
         assert!(second.accepted);
         gate.release();
@@ -1956,7 +1968,7 @@ mod tests {
         let observed_starting = Arc::new(Mutex::new(false));
         let seen = Arc::clone(&observed_starting);
         let held = Arc::clone(&gate);
-        let world = World::with_ingest(Arc::new(move |world, generation, path, state_dir| {
+        let world = World::with_ingest(Arc::new(move |world, generation, attach| {
             *seen
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner) =
@@ -1966,8 +1978,7 @@ mod tests {
             super::start(
                 world,
                 generation,
-                path,
-                state_dir,
+                attach,
                 Arc::new(move |_inputs| {
                     Box::new(RecordingSink {
                         id: 0,
@@ -1979,7 +1990,7 @@ mod tests {
             );
         }));
 
-        world.attach(&log.to_string_lossy(), None);
+        world.attach(&log.to_string_lossy(), None, eqlog::ZoneHint::default());
         assert!(
             *observed_starting
                 .lock()
@@ -2017,7 +2028,7 @@ mod tests {
         let gate = Arc::new(Gate::default());
         let world = recording_world(&ledger, Some(Arc::clone(&gate)));
 
-        world.attach(&log.to_string_lossy(), None);
+        world.attach(&log.to_string_lossy(), None, eqlog::ZoneHint::default());
         settle("the scan to reach its first event", || {
             !ledger.of(0).is_empty()
         });
@@ -2046,7 +2057,7 @@ mod tests {
         let ledger = Arc::new(Ledger::default());
         let world = recording_world(&ledger, None);
 
-        world.attach(&log.to_string_lossy(), None);
+        world.attach(&log.to_string_lossy(), None, eqlog::ZoneHint::default());
         settle("the fold to land", || {
             matches!(world.health().status, HealthResultStatus::Live)
         });
@@ -2083,7 +2094,7 @@ mod tests {
         let ledger = Arc::new(Ledger::default());
         let world = recording_world(&ledger, None);
 
-        world.attach(&log.to_string_lossy(), None);
+        world.attach(&log.to_string_lossy(), None, eqlog::ZoneHint::default());
         settle("the fold to land", || {
             matches!(world.health().status, HealthResultStatus::Live)
         });
@@ -2111,7 +2122,7 @@ mod tests {
         let ledger = Arc::new(Ledger::default());
         let world = recording_world(&ledger, None);
 
-        world.attach(&log.to_string_lossy(), None);
+        world.attach(&log.to_string_lossy(), None, eqlog::ZoneHint::default());
         settle("the fold to land", || {
             matches!(world.health().status, HealthResultStatus::Live)
         });
@@ -2154,7 +2165,7 @@ mod tests {
         let ledger = Arc::new(Ledger::default());
         let world = recording_world(&ledger, None);
 
-        world.attach(&log.to_string_lossy(), None);
+        world.attach(&log.to_string_lossy(), None, eqlog::ZoneHint::default());
         settle("the fold to land", || {
             matches!(world.health().status, HealthResultStatus::Live)
         });
@@ -2185,7 +2196,7 @@ mod tests {
         let ledger = Arc::new(Ledger::default());
         let world = recording_world(&ledger, None);
 
-        let result = world.attach(&missing.to_string_lossy(), None);
+        let result = world.attach(&missing.to_string_lossy(), None, eqlog::ZoneHint::default());
         assert!(
             result.accepted,
             "an attach is accepted at the moment it wins, not when the file proves readable"

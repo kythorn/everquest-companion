@@ -48,7 +48,8 @@
         "op": "session.attach",
         "params": {
           "logPath": "C:\\Users\\Public\\Daybreak Game Company\\Installed Games\\EverQuest Legends\\Logs\\eqlog_Primitive_freeport.txt",
-          "stateDir": "C:\\Users\\Public\\AppData\\Roaming\\everquest-companion"
+          "stateDir": "C:\\Users\\Public\\AppData\\Roaming\\everquest-companion",
+          "clock": { "tz": "America/Los_Angeles", "utcOffsetMin": -420 }
         }
       }
     },

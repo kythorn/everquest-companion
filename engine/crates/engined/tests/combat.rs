@@ -20,10 +20,12 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::{Duration, Instant};
 
-use harness::{attach, combat_snapshot, health, search_fights, subscribe, Client, Engine};
+use harness::{
+    attach, attach_params, combat_snapshot, health, search_fights, subscribe, Client, Engine,
+};
 use protocol::generated::{
-    CombatSearchFightsResult, CombatSnapshotOpts, CombatSnapshotResult, DiffOp, EngineMessage,
-    ErrorCode, ReplyResult, Row,
+    ClockHint, CombatSearchFightsResult, CombatSnapshotOpts, CombatSnapshotResult, DiffOp,
+    EngineMessage, ErrorCode, ReplyResult, Row, SessionAttachParams,
 };
 
 /// How long a wait may take before the test is called hung. A failure mechanism — every assertion
@@ -58,6 +60,12 @@ impl Staged {
     }
 
     fn aged(tag: &str, back_ms: i64) -> Self {
+        Staged::zoned(tag, back_ms, eqlog::host_timezone().into())
+    }
+
+    /// …and the same session written in a stated zone. A log's stamps are a zone-less local wall
+    /// clock, so the zone the lines are WRITTEN in is what the engine has to resolve back.
+    fn zoned(tag: &str, back_ms: i64, zone: eqlog::Zone) -> Self {
         static N: AtomicU32 = AtomicU32::new(0);
         let dir = std::env::temp_dir().join(format!(
             "engined-combat-{}-{}-{tag}",
@@ -68,7 +76,7 @@ impl Staged {
         Self {
             dir,
             started_ms: wall_clock_ms() - back_ms,
-            clock: eqlog::Clock::new(eqlog::host_timezone()),
+            clock: eqlog::Clock::new(zone),
         }
     }
 
@@ -237,8 +245,20 @@ fn ask_search(
 
 /// Wait for the fold to land, then answer. Every test but the mid-fold one starts here.
 fn live_client(engine: &Engine, staged: &Staged) -> Client {
+    live_client_with(engine, staged, None)
+}
+
+/// …and the same, with the attach carrying what the host says about its own clock.
+fn live_client_with(engine: &Engine, staged: &Staged, clock: Option<ClockHint>) -> Client {
     let mut client = engine.connected();
-    client.send(&attach(1, &staged.log().to_string_lossy()));
+    client.send(&attach_params(
+        1,
+        SessionAttachParams {
+            log_path: staged.log().to_string_lossy().into_owned(),
+            state_dir: None,
+            clock,
+        },
+    ));
     let deadline = Instant::now() + PATIENCE;
     let mut id = 1000;
     loop {
@@ -383,6 +403,65 @@ fn a_live_meter_is_stamped_with_the_engines_own_clock_and_agrees_with_a_second_f
     assert!(
         answer.snapshot.0.get("petNudge").is_none(),
         "no summon, no nudge"
+    );
+}
+
+/// An offset this machine is provably NOT on, so the platform probe cannot claim agreement with it
+/// and the fixed-offset rung is the one that answers. Both candidates are half-hour offsets, which
+/// no zone the CI fleet runs in uses.
+fn a_foreign_offset_min() -> i32 {
+    const CANDIDATES: [i32; 2] = [330, 210];
+    let here = eqlog::platform_timezone()
+        .map(|tz| eqlog::Zone::Iana(tz).offset_min_at_ms(wall_clock_ms()));
+    CANDIDATES
+        .into_iter()
+        .find(|c| here != Some(*c))
+        .expect("this machine cannot be on both offsets at once")
+}
+
+#[test]
+fn a_host_that_can_only_name_an_offset_still_keeps_a_live_fight_open() {
+    // THE WINE FAILURE, END TO END. The platform probe answers nothing (or something that disagrees
+    // with the host's own offset), so the zone resolves to a bare offset — and the fight lifecycle,
+    // which compares the log's stamps against this process's wall clock, must still see a session
+    // that is seconds old. Before the attach carried a clock the engine read every stamp as UTC,
+    // put the log hours in the past, and finalized the open fight on the very next serve beat.
+    let offset_min = a_foreign_offset_min();
+    let zone = eqlog::Zone::fixed(offset_min).expect("a representable offset");
+    let staged = Staged::zoned("offset-clock", 8_000, zone);
+    staged.stage_a_fight();
+    let engine = Engine::start();
+    // `Europe/Berlin` is east of UTC in every season, so it can never carry a half-hour offset: the
+    // name is discarded, the offset stands, and the resolved zone has no name of its own.
+    let mut client = live_client_with(
+        &engine,
+        &staged,
+        Some(ClockHint {
+            tz: Some("Europe/Berlin".to_owned()),
+            utc_offset_min: Some(i64::from(offset_min)),
+        }),
+    );
+
+    let answer = snapshot(&mut client, 2, Some(full()));
+    assert_eq!(answer.snapshot["hydrating"], serde_json::json!(false));
+    assert_eq!(
+        answer.snapshot["segments"][0]["kind"],
+        serde_json::json!("current"),
+        "a fight the log is still talking about stays open: {:?}",
+        answer.snapshot["segments"][0]
+    );
+    // Finalized at the fight's own clock if it ever is — the span is the four seconds the log
+    // describes, which a zone read hours wrong could not produce.
+    assert_eq!(
+        answer.snapshot["segments"][0]["durationSec"],
+        serde_json::json!(4.0)
+    );
+    // The instant the meter was taken at is this machine's, and the log's own clock now agrees with
+    // it — which is the whole of the fix stated as one subtraction.
+    assert!(
+        (answer.now - wall_clock_ms()).abs() < 60_000,
+        "a live meter is stamped with THIS machine's clock: {}",
+        answer.now
     );
 }
 

@@ -28,12 +28,14 @@ use protocol::generated::{
     EpochMessageKind, EpochReason, FireCaptures, FireMessage, FireMessageKind, FoldProgress,
     HealthResult, HealthResultStatus, KnowledgeMissMessage, KnowledgeMissMessageKind,
     KnowledgePushDomain, LogMark, ModuleChangedMessage, ModuleChangedMessageKind,
-    PerfBudgetsResult, PerfIngest, PerfMoment, PerfServeSource, PerfSnapshotResult,
-    PerfSnapshotResultStatus, PerfTimelineResult, RequestId, ResetMessage, ResetMessageKind, Row,
+    PerfBudgetsResult, PerfIngest, PerfSnapshotResult, PerfSnapshotResultClockSource,
+    PerfTimelineResult, RequestId, ResetMessage, ResetMessageKind, Row,
 };
 
 use crate::budgets;
+use crate::clock::clock_source;
 use crate::ingest::{self, Starter};
+use crate::translate::{clamp_i64, moment_row, perf_status, serve_rows};
 use crate::views::{self, FrameKind, Meter, Prepared, SourceDef};
 
 /// The generation a fresh process starts in.
@@ -199,6 +201,13 @@ struct Fold {
     events: i64,
     /// The `ts` of the last event folded — the log's own clock.
     last_ts: Option<i64>,
+    /// The zone this generation parses stamps through, as it goes on the wire, and where it came
+    /// from. Absent before an attach has resolved one — the app's hint, this process's probe, or
+    /// the UTC fallback that means neither answered.
+    clock_zone: Option<String>,
+    clock_source: Option<PerfSnapshotResultClockSource>,
+    /// The live tail's own skew reading. See [`FoldMark::skew_ms`].
+    clock_skew_ms: Option<i64>,
 }
 
 /// One measurement of an ingest, as the ingest thread hands it to the world.
@@ -222,6 +231,10 @@ pub struct FoldMark {
     pub total: u64,
     /// The `ts` of the last event folded, if one could be read.
     pub last_ts: Option<i64>,
+    /// This machine's wall clock minus [`Self::last_ts`], signed — the LIVE TAIL's measurement and
+    /// nobody else's. `None` from the scan and from a tail that has folded no stamped line: the age
+    /// of a historical line is a fact about when somebody played, never about a clock.
+    pub skew_ms: Option<i64>,
     /// Which loop took this measurement — false for the historical scan, [`eqlog::tail::LIVE`] for
     /// the tail.
     ///
@@ -672,6 +685,12 @@ impl World {
             // reason to be missing.
             events: mark.as_ref().map(|_| fold.events),
             last_event_ts: fold.last_ts,
+            // WHICH CLOCK THIS FOLD IS ON, and how far it disagrees with this machine's. It is the
+            // one wall-clock reading on this answer and it is the ingest's, taken on the live tail
+            // and merely restated here — `uptimeMs` is still the only clock this method reads.
+            clock_zone: fold.clock_zone,
+            clock_source: fold.clock_source,
+            clock_skew_ms: fold.clock_skew_ms,
             mark,
             ingest: PerfIngest {
                 spell_db_ms: measured.ingest.spell_db_ms.map(clamp_i64),
@@ -1252,10 +1271,16 @@ impl World {
     /// percentage would be inventing a measurement.
     ///
     /// `state_dir` is the app's `userData`; `None` is the file-free attach a client that said
-    /// nothing gets. It is a parameter rather than a second method, even though almost every caller
-    /// here passes `None`, because a convenience wrapper would let a future call site attach
+    /// nothing gets. `clock` is what the host says about its own zone, empty for a client that said
+    /// nothing. Both are parameters rather than a second method, even though almost every caller
+    /// here passes nothing, because a convenience wrapper would let a future call site attach
     /// without considering the question.
-    pub fn attach(&self, log_path: &str, state_dir: Option<&str>) -> AttachResult {
+    pub fn attach(
+        &self,
+        log_path: &str,
+        state_dir: Option<&str>,
+        clock: eqlog::ZoneHint,
+    ) -> AttachResult {
         let log = PathBuf::from(log_path);
         let state_dir = state_dir.map(PathBuf::from);
         let generation;
@@ -1300,12 +1325,35 @@ impl World {
             broadcast(&mut state, &announcement);
         }
 
-        (self.inner.ingest)(self, generation, log, state_dir);
+        (self.inner.ingest)(
+            self,
+            generation,
+            ingest::Attach {
+                log,
+                state_dir,
+                clock,
+            },
+        );
 
         AttachResult {
             epoch,
             accepted: true,
         }
+    }
+
+    /// The zone this generation resolved, and the evidence it rests on — stated once, at attach,
+    /// before the first stamp is parsed.
+    ///
+    /// A `report_*` method like every other statement an ingest makes, so a turn that has already
+    /// lost states nothing.
+    pub fn report_clock(&self, generation: u64, resolved: eqlog::ResolvedZone) -> bool {
+        let mut state = self.lock();
+        if !self.owns(generation) {
+            return false;
+        }
+        state.fold.clock_zone = Some(resolved.zone.name());
+        state.fold.clock_source = Some(clock_source(resolved.source));
+        true
     }
 
     /// Does this turn still own the world? The lock-free half of the generation law.
@@ -1353,6 +1401,8 @@ impl World {
         state.fold.checkpoint = mark.checkpoint;
         state.fold.events = mark.events;
         state.fold.last_ts = mark.last_ts;
+        // Only the live tail measures one, and only its frames carry one — see `FoldMark::skew_ms`.
+        state.fold.clock_skew_ms = mark.skew_ms;
         let frame = EngineMessage::EpochMessage(EpochMessage {
             kind: EpochMessageKind::Epoch,
             epoch: Epoch(state.epoch),
@@ -1450,30 +1500,6 @@ impl Default for World {
     }
 }
 
-// The `perf.snapshot` folds. Free functions, and none of them touches the lock: `perf_snapshot`
-// reads the world once and does its arithmetic outside the critical section, so no connection waits
-// on a diagnostic being formatted.
-
-/// The two status enums are generated from two schema definitions with the same five members, so
-/// the mapping is exhaustive by the compiler: a member added to one and not the other stops this
-/// building rather than being quietly mapped to the wrong thing.
-fn perf_status(status: HealthResultStatus) -> PerfSnapshotResultStatus {
-    match status {
-        HealthResultStatus::Starting => PerfSnapshotResultStatus::Starting,
-        HealthResultStatus::Attaching => PerfSnapshotResultStatus::Attaching,
-        HealthResultStatus::Folding => PerfSnapshotResultStatus::Folding,
-        HealthResultStatus::Live => PerfSnapshotResultStatus::Live,
-        HealthResultStatus::Idle => PerfSnapshotResultStatus::Idle,
-    }
-}
-
-/// A counter onto the wire's `integer`. Saturating rather than wrapping: a byte count this app can
-/// produce does not reach 2^63, and an `as` cast that could silently report a negative one has no
-/// place in an instrument.
-fn clamp_i64(value: u64) -> i64 {
-    i64::try_from(value).unwrap_or(i64::MAX)
-}
-
 /// How many subscriptions are open over each source right now, across every connection.
 ///
 /// A live count, not a cumulative one, and the world's own answer rather than the meter's — the
@@ -1488,78 +1514,6 @@ fn subscriber_counts(state: &State) -> BTreeMap<&'static str, i64> {
         }
     }
     counts
-}
-
-/// The union of what has served and what is being watched, ordered by source name.
-///
-/// Two different reasons put a source in the list. It has served frames — a cost, which belongs
-/// whether or not anybody is still subscribed, because the generation's bill does not disappear
-/// when a window closes. Or somebody is subscribed to it right now and it has served nothing yet,
-/// which is a subscription waiting for its first frame: omitting it would make "opened and nothing
-/// came" indistinguishable from "never opened".
-///
-/// A source in neither set is absent — no rows of zeros for a source this session has never had
-/// anything to do with.
-/// One ring entry on the wire — five field assignments and no arithmetic. The ring did the
-/// subtraction that makes each figure an interval, where the counters live; this is the mapping
-/// onto the generated type, which is the one thing `views/` may not know about.
-fn moment_row(moment: &views::Moment) -> PerfMoment {
-    PerfMoment {
-        at_ms: clamp_i64(moment.at_ms),
-        span_ms: clamp_i64(moment.span_ms),
-        frames: clamp_i64(moment.frames),
-        payload_weight: clamp_i64(moment.bytes),
-        fold_to_frame_us_max: moment.worst_us.map(clamp_i64),
-    }
-}
-
-fn serve_rows(
-    served: &[views::SourceMeter],
-    watched: &BTreeMap<&'static str, i64>,
-) -> Vec<PerfServeSource> {
-    let mut rows: BTreeMap<&'static str, PerfServeSource> = BTreeMap::new();
-    for source in served {
-        rows.insert(
-            source.source,
-            PerfServeSource {
-                source: source.source.to_owned(),
-                frames: clamp_i64(source.frames),
-                resets: clamp_i64(source.resets),
-                diffs: clamp_i64(source.diffs),
-                rows: clamp_i64(source.rows),
-                payload_weight: clamp_i64(source.bytes),
-                widest_payload_weight: clamp_i64(source.widest as u64),
-                fold_to_frame_us_mean: source.latency_mean_us.map(clamp_i64),
-                fold_to_frame_us_max: source.latency_max_us.map(clamp_i64),
-                // Filled below, from the world's own count — a source that has served frames and
-                // has since been unsubscribed honestly has zero.
-                subscribers: 0,
-            },
-        );
-    }
-    for (source, count) in watched {
-        rows.entry(source)
-            .or_insert_with(|| empty_serve_row(source))
-            .subscribers = *count;
-    }
-    rows.into_values().collect()
-}
-
-/// A source somebody is subscribed to that has served nothing yet. Every counter is a real zero —
-/// no frame has been sent — and the two latencies are absent, because nothing was timed.
-fn empty_serve_row(source: &str) -> PerfServeSource {
-    PerfServeSource {
-        source: source.to_owned(),
-        frames: 0,
-        resets: 0,
-        diffs: 0,
-        rows: 0,
-        payload_weight: 0,
-        widest_payload_weight: 0,
-        fold_to_frame_us_mean: None,
-        fold_to_frame_us_max: None,
-        subscribers: 0,
-    }
 }
 
 /// Push a connection-wide message to every open connection, dropping the ones that have gone.
@@ -1691,7 +1645,7 @@ mod tests {
 
     /// A world whose attaches start nothing.
     fn world() -> World {
-        World::with_ingest(Arc::new(|_world, _generation, _log, _state_dir| {}))
+        World::with_ingest(Arc::new(|_world, _generation, _attach| {}))
     }
 
     /// The generation the current turn holds. A real ingest is handed its own number by `attach`
@@ -1710,6 +1664,7 @@ mod tests {
             pct,
             total: 8192,
             last_ts: Some(1_787_181_707_000),
+            skew_ms: None,
             // Every mark these tests make stands in for a scan — the loop a landing fold ends in.
             // The tail's own stamp is proven where there is a real tail: `tests/ingest.rs`.
             live: false,
@@ -1771,7 +1726,7 @@ mod tests {
         let one = world.join();
         let two = world.join();
 
-        let result = world.attach(A_LOG, None);
+        let result = world.attach(A_LOG, None, eqlog::ZoneHint::default());
         assert!(result.accepted);
         assert_eq!(*result.epoch, 2);
 
@@ -1796,7 +1751,7 @@ mod tests {
         let left = world.join();
         world.leave(left.id);
 
-        world.attach(A_LOG, None);
+        world.attach(A_LOG, None, eqlog::ZoneHint::default());
 
         assert!(stayed.inbox.recv().is_ok());
         assert!(left.inbox.try_recv().is_err());
@@ -1806,8 +1761,14 @@ mod tests {
     fn the_generation_is_process_global_and_monotonic() {
         let world = world();
         let mirror = world.clone();
-        assert_eq!(*world.attach(A_LOG, None).epoch, 2);
-        assert_eq!(*mirror.attach(A_LOG, None).epoch, 3);
+        assert_eq!(
+            *world.attach(A_LOG, None, eqlog::ZoneHint::default()).epoch,
+            2
+        );
+        assert_eq!(
+            *mirror.attach(A_LOG, None, eqlog::ZoneHint::default()).epoch,
+            3
+        );
         assert_eq!(*world.health().epoch, 3);
         assert_eq!(*mirror.health().epoch, 3);
     }
@@ -1815,9 +1776,9 @@ mod tests {
     #[test]
     fn an_attach_strips_the_turn_before_it_of_every_way_to_speak() {
         let world = world();
-        world.attach(A_LOG, None);
+        world.attach(A_LOG, None, eqlog::ZoneHint::default());
         let loser = generation(&world);
-        world.attach(A_LOG, None);
+        world.attach(A_LOG, None, eqlog::ZoneHint::default());
 
         assert!(!world.owns(loser));
         assert!(!world.report_status(loser, HealthResultStatus::Live));
@@ -1830,7 +1791,7 @@ mod tests {
     fn a_progress_frame_carries_the_measurement_to_every_connection() {
         let world = world();
         let listener = world.join();
-        world.attach(A_LOG, None);
+        world.attach(A_LOG, None, eqlog::ZoneHint::default());
         let generation = generation(&world);
         // Drain the attach announcement.
         let _bump = listener.inbox.recv().expect("the bump");
@@ -1864,7 +1825,7 @@ mod tests {
         let bystander = world.join();
         world.open_subscription(listener.id, 7, a_view());
         world.open_subscription(listener.id, 9, a_view());
-        world.attach(A_LOG, None);
+        world.attach(A_LOG, None, eqlog::ZoneHint::default());
         let generation = generation(&world);
 
         assert!(land(&world, generation, mark(3, 100.0)));
@@ -1906,7 +1867,7 @@ mod tests {
     #[test]
     fn an_ingest_that_ends_leaves_the_world_idle_with_its_generation_intact() {
         let world = world();
-        world.attach(A_LOG, None);
+        world.attach(A_LOG, None, eqlog::ZoneHint::default());
         let generation = generation(&world);
         assert!(world.report_idle(generation));
         assert!(matches!(world.health().status, HealthResultStatus::Idle));

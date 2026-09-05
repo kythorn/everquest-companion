@@ -3719,3 +3719,17 @@ A file carrying TWO waves' hunks lands with the LATER wave's commit + a
 fightSelection+levelUp). `git status --porcelain | grep '^[MADR] '` BEFORE
 every commit — the index is shared and a sibling's staged deletion WILL ride
 your commit (6db8790 swept one; its wave's later commit completed it).
+
+## The sky-filters.e2e flake rows, at full length (2026-08-13)
+
+<!-- Moved verbatim from AGENTS.md (2026-09-04 distillation). -->
+
+- `sky-filters.e2e` · expanded-quest step vs live-log viewKey remount (6
+  sightings, multi-spec-sweep only) · **RESOLVED 9816cd34 (JOS-279)** —
+  order-hardening was a BET; `tests/e2e/viewRemount.mts` HOLDS the
+  precondition instead. Full history: docs/agents-archive.md.
+- `sky-filters.e2e` · a SECOND, distinct cause: collapsed-mount/close-panel
+  steps failed once with the remount guard HOLDING ("0 rebuilds seen while
+  settling") · 1 sighting (2026-08-13, JOS-294 worker six-spec sweep; green
+  standalone and in the next full sweep) · NOT the resolved row's signature —
+  unknown mechanism, watch for a second sighting before diagnosing.

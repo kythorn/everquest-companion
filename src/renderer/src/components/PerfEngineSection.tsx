@@ -28,6 +28,7 @@ import {
   eventFreshnessMs,
   formatAge,
   formatBytes,
+  formatEngineClock,
   formatEngineState,
   formatMicros,
   formatParity,
@@ -193,6 +194,24 @@ function BudgetTable({ sample }: { sample: EnginePerfSample }): JSX.Element | nu
   )
 }
 
+/**
+ * WHICH CLOCK THE FOLD IS ON — a fact row while the two clocks agree, a sentence when they do not.
+ *
+ * The warning is drawn full-width rather than as a `label · value` pair because it is not a
+ * measurement any more: a whole number of hours is a zone the engine resolved wrongly, and every
+ * number above it is wrong with it. Absent entirely before an attach has resolved a zone.
+ */
+function ClockRow({ sample }: { sample: EnginePerfSample }): JSX.Element | null {
+  const line = formatEngineClock(sample)
+  if (line === null) return null
+  if (!line.warning) return <Fact label="clock" value={line.text} />
+  return (
+    <Typography variant="caption" color="error.main" data-testid="perf-engine-clock-warning">
+      {line.text}
+    </Typography>
+  )
+}
+
 /** How far behind the log's own clock the engine's last folded event is. */
 function freshness(sample: EnginePerfSample): string | null {
   const ms = eventFreshnessMs(sample)
@@ -220,6 +239,7 @@ export default function PerfEngineSection({
       </Typography>
       <ProcessRow sample={sample} />
       <Fact label="state" value={formatEngineState(sample)} />
+      <ClockRow sample={sample} />
       {engine?.events !== undefined && (
         <Fact
           label="events folded"

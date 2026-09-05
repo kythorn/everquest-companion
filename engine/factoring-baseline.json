@@ -51,7 +51,7 @@
       "file": "crates/engined/src/ingest.rs",
       "metric": "function-lines",
       "name": "run",
-      "value": 182
+      "value": 181
     },
     {
       "file": "crates/engined/src/ops.rs",
@@ -69,13 +69,13 @@
       "file": "crates/engined/src/ops.rs",
       "metric": "file-lines",
       "name": "",
-      "value": 1651
+      "value": 1645
     },
     {
       "file": "crates/engined/src/ops.rs",
       "metric": "function-lines",
       "name": "Session::dispatch",
-      "value": 397
+      "value": 391
     },
     {
       "file": "crates/engined/src/search.rs",
@@ -117,7 +117,7 @@
       "file": "crates/engined/src/world.rs",
       "metric": "file-lines",
       "name": "",
-      "value": 1111
+      "value": 1086
     },
     {
       "file": "crates/eqlog/src/event.rs",

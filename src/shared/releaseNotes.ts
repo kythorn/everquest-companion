@@ -62,6 +62,17 @@
 //
 // A bullet NEVER restates its neighbour, never names a file, a module or a wave, and never
 // explains how the app works internally (state, never process — the UI conventions).
+//
+// A BULLET IS SHORT (owner, 2026-09-03: "that's an incredibly long paragraph"). The shape is
+// three sentences at most and it is enforced by `tests/releaseNotes.test.mts`:
+//
+//   1. WHAT THE PLAYER SEES NOW — the fix or the feature, stated as the outcome. This sentence is
+//      the whole bullet for a small change.
+//   2. (optional) WHY IT WAS WRONG, in one sentence of cause and effect in the player's terms.
+//   3. (optional) WHAT CHANGED, in one clause. Never the layers of the fix, never the diagnostics
+//      that went in beside it — a second thing the player can see is a second bullet.
+//
+// If the sentence needs a comma-spliced tour of the mechanism, it is a ticket comment, not a note.
 
 /** Which sub-header an entry sits under. Absent ⇒ the entry is a bullet under no sub-header. */
 export type ReleaseEntryKind = 'new' | 'fixed' | 'changed'
@@ -124,6 +135,56 @@ export interface ReleaseNote {
  * still sees exactly the releases above it.
  */
 export const RELEASE_NOTES: readonly ReleaseNote[] = [
+  {
+    version: '1.16.0',
+    date: '2026-09-03',
+    entries: [
+      {
+        kind: 'fixed',
+        text: 'Fights no longer end after one second, and buff and debuff timers no longer run on the wrong clock. On some machines, most often under Wine, the engine could not learn your time zone and quietly assumed UTC, so it read every log line as hours old. The app now tells it the zone.',
+        fromReport: true
+      },
+      {
+        kind: 'new',
+        text: 'The performance panel shows which clock the engine is on and how far it sits from your machine\'s. Seconds are normal; whole hours mean a wrong time zone, and the panel says so.'
+      }
+    ]
+  },
+  {
+    version: '1.15.0',
+    date: '2026-09-02',
+    entries: [
+      {
+        kind: 'fixed',
+        text: 'The endless catch-up loop is fixed. A rare pattern in a log - a wear-off or death landing in the same second as a crowd of same-named applications - crashed the engine at the same spot on every re-read, so the app re-read your log over and over while the Combat tab kept resetting mid-fight and the Leveling tab blanked.',
+        fromReport: true
+      },
+      {
+        kind: 'fixed',
+        text: 'The engine is no longer restarted for things that were never its fault: a slow answer to a routine health check now gets a second ask before any restart, waking your machine from sleep no longer counts against it, and your PC briefly running short of network connections is waited out instead of blamed. Each of those used to cost you a full catch-up read.'
+      },
+      {
+        kind: 'fixed',
+        text: 'Timers for upgraded spells now start from your rank\'s real duration. The spell database only knows the base ranks, so an upgraded buff or debuff counted down from the wrong number until the app had watched enough casts - now the upgrade tier\'s duration growth is applied from your first cast.',
+        fromReport: true
+      },
+      {
+        kind: 'fixed',
+        text: 'Debuff timers no longer show roughly double the real duration. When a slowed mob died unseen, a later kill of a same-named mob could be misread as the debuff still running, and the timer believed the longer claim. A mob\'s death can no longer outrank the durations the log has actually watched end.',
+        fromReport: true
+      },
+      {
+        kind: 'fixed',
+        text: 'Vengeance of the Wild counts as a DoT again in Best Spells, with its damage totalled per tick instead of once.',
+        fromReport: true
+      },
+      {
+        kind: 'fixed',
+        text: 'Swift Like The Wind no longer shows up twice for enchanters - it is level 47 only, and the phantom level-49 card is gone.',
+        fromReport: true
+      }
+    ]
+  },
   {
     version: '1.14.0',
     date: '2026-08-27',

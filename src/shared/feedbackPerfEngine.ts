@@ -54,6 +54,12 @@ export type FeedbackEngineBudgetId = (typeof ENGINE_BUDGETS)[number]
 export const ENGINE_VERDICTS = ['pass', 'fail', 'unmeasured'] as const
 export type FeedbackEngineVerdict = (typeof ENGINE_VERDICTS)[number]
 
+/** WHERE THE FOLD'S ZONE CAME FROM (JOS-536). A closed set, so it rides the same way every other
+ *  string on this block does — as a member rather than as text. The ZONE ITSELF never rides: it is
+ *  a name, and this block carries no strings (see the bright line above). */
+export const ENGINE_CLOCK_SOURCES = ['host', 'platform', 'offset', 'utc'] as const
+export type FeedbackEngineClockSource = (typeof ENGINE_CLOCK_SOURCES)[number]
+
 /** Ceilings, restated from `./feedbackPerf.ts` BY VALUE for the cycle reason in the header, plus
  *  three this block needs and that file has no use for. Pinned equal in the tests. */
 export const MAX_ENGINE_MS = 3_600_000
@@ -105,6 +111,23 @@ export interface FeedbackPerfEngine {
    * strongest things a stalled-app report can say.
    */
   behindMs?: number
+  /**
+   * WHICH CLOCK THE FOLD IS ON, and how far it disagrees with the machine that reported (JOS-536).
+   *
+   * `clockSource` says whether the engine was TOLD its zone or guessed it, and `utc` there is a
+   * diagnosis on its own: it means neither the app's hint nor the platform probe answered, which is
+   * the Wine failure that made three 1.15.0 reporters' fights one second long.
+   *
+   * `clockSkewMs` IS SIGNED, and it is the only signed number on this block. Everything else here
+   * is a cost or a lag and cannot be negative; this is the distance between two clocks, and which
+   * way round it points is half the finding — a US host reads hours behind, an east-of-UTC one
+   * hours ahead. Bounded by `MAX_ENGINE_UP_MS` in both directions for `behindMs`'s reason: it is a
+   * clock distance rather than a cost, and an hour would be the wrong ceiling for it.
+   *
+   * Neither says WHEN anybody played, and the zone NAME does not ride at all.
+   */
+  clockSource?: FeedbackEngineClockSource
+  clockSkewMs?: number
   /** What the parser's spell catalog cost this attach. */
   spellDbMs?: number
   /** Wall time of the scan, and what it read. The fold RATE is these two divided, and it is left
@@ -149,6 +172,9 @@ export interface EngineFoldInput {
     uptimeMs: number
     events?: number
     lastEventTs?: number
+    // `clockZone` is deliberately absent from this shape: what the fold cannot see, it cannot send.
+    clockSource?: string
+    clockSkewMs?: number
     ingest: { spellDbMs?: number; scanMs?: number; scanBytes?: number }
     serve: EngineServeRow[]
   } | null
@@ -169,6 +195,14 @@ function whole(value: number | undefined, max: number): number | undefined {
   if (value === undefined || !Number.isFinite(value)) return undefined
   const n = Math.max(0, Math.round(value))
   return Number.isSafeInteger(n) && n <= max ? n : undefined
+}
+
+/** …and the same for a reading whose SIGN is part of the finding. Same bound, applied to the
+ *  magnitude: a clock two hours ahead and one two hours behind are equally in range. */
+function signed(value: number | undefined, max: number): number | undefined {
+  if (value === undefined || !Number.isFinite(value)) return undefined
+  const n = Math.round(value)
+  return Number.isSafeInteger(n) && Math.abs(n) <= max ? n : undefined
 }
 
 /** The serve table, summed into the three numbers the block carries. */
@@ -234,6 +268,10 @@ export function foldPerfEngine(input: EngineFoldInput): FeedbackPerfEngine | nul
     upMs: whole(snap.uptimeMs, MAX_ENGINE_UP_MS) ?? 0,
     ...optional('events', whole(snap.events, MAX_ENGINE_COUNT)),
     ...optional('behindMs', whole(behind, MAX_ENGINE_UP_MS)),
+    // A source this build has never heard of is DROPPED, the closed-set rule applied at the fold:
+    // an engine ahead of the app must not be able to open a string channel.
+    ...clockSourceField(snap.clockSource),
+    ...optional('clockSkewMs', signed(snap.clockSkewMs, MAX_ENGINE_UP_MS)),
     ...optional('spellDbMs', whole(snap.ingest.spellDbMs, MAX_ENGINE_MS)),
     ...optional('scanMs', whole(snap.ingest.scanMs, MAX_ENGINE_MS)),
     ...optional(
@@ -249,6 +287,12 @@ export function foldPerfEngine(input: EngineFoldInput): FeedbackPerfEngine | nul
 /** `{ key: value }` when the value is there, `{}` when it is not — the omission rule, once. */
 function optional(key: string, value: number | undefined): Record<string, number> {
   return value === undefined ? {} : { [key]: value }
+}
+
+/** …and the same for the one enum member that is optional. */
+function clockSourceField(raw: string | undefined): { clockSource?: FeedbackEngineClockSource } {
+  const source = ENGINE_CLOCK_SOURCES.find((s) => s === raw)
+  return source === undefined ? {} : { clockSource: source }
 }
 
 /**
@@ -310,6 +354,16 @@ function count(raw: unknown, field: string, max: number): Validated<number> {
 function maybe(raw: unknown, field: string, max: number): Validated<number | undefined> {
   if (raw === null || raw === undefined) return { ok: true, value: undefined }
   return count(raw, field, max)
+}
+
+/** The one SIGNED field, optionally — same whole-number discipline, bound applied to the
+ *  magnitude. See `clockSkewMs`'s own doc for why a negative reading is a real one. */
+function maybeSigned(raw: unknown, field: string, max: number): Validated<number | undefined> {
+  if (raw === null || raw === undefined) return { ok: true, value: undefined }
+  if (typeof raw !== 'number' || !Number.isSafeInteger(raw))
+    return bad(field, `${field} must be a whole number.`)
+  if (Math.abs(raw) > max) return bad(field, `${field} must be between ${-max} and ${max}.`)
+  return { ok: true, value: raw }
 }
 
 const OPTIONAL_FIELDS = [
@@ -380,7 +434,26 @@ export function validatePerfEngine(raw: unknown): Validated<FeedbackPerfEngine |
     if (!v.ok) return v
     if (v.value !== undefined) value[key] = v.value
   }
+  const clock = applyClock(raw, value)
+  if (!clock.ok) return clock
   return { ok: true, value }
+}
+
+/**
+ * The two clock fields, applied onto the block being reconstructed.
+ *
+ * Its own function for this file's standing reason: `validatePerfEngine` sits at the repo's
+ * complexity ceiling of 12, and three more branches took it over. An unknown `clockSource` is
+ * DROPPED rather than refused — an engine ahead of this build is a client with a field this one
+ * cannot read, not a forgery, and that is the same answer the fold gives.
+ */
+function applyClock(raw: Record<string, unknown>, value: FeedbackPerfEngine): Validated<void> {
+  const skew = maybeSigned(raw.clockSkewMs, 'env.perf.engine.clockSkewMs', MAX_ENGINE_UP_MS)
+  if (!skew.ok) return skew
+  if (skew.value !== undefined) value.clockSkewMs = skew.value
+  const source = ENGINE_CLOCK_SOURCES.find((s) => s === raw.clockSource)
+  if (source !== undefined) value.clockSource = source
+  return { ok: true, value: undefined }
 }
 
 // ---- the printed line --------------------------------------------------------------------------
@@ -412,6 +485,10 @@ function ingestWords(engine: FeedbackPerfEngine): string[] {
   const words: string[] = []
   if (engine.events !== undefined) words.push(`${engine.events.toLocaleString()} events`)
   if (engine.behindMs !== undefined) words.push(`${engine.behindMs}ms behind`)
+  // WHICH CLOCK, AND HOW WRONG. A whole number of hours here is the zone bug, and a reader who
+  // never opens the panel has to be able to see it in the printed line.
+  if (engine.clockSource !== undefined) words.push(`clock ${engine.clockSource}`)
+  if (engine.clockSkewMs !== undefined) words.push(`skew ${engine.clockSkewMs}ms`)
   if (engine.scanMs !== undefined)
     words.push(
       `scan ${engine.scanMs}ms${engine.scanKb === undefined ? '' : ` of ${engine.scanKb}kB`}`

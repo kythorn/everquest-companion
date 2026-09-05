@@ -8,7 +8,7 @@
 //! and a schema edit that lands without regenerating turns the protocol-codegen staleness
 //! test red on this side and tests/protocolSchema.test.mts red on the other.
 //!
-//! schema-digest: sha256:126ec50388678281ec8ad90206c724655a0c3aea31b0438493468b9587b804bb
+//! schema-digest: sha256:d02184bb8cfcfc641683a27d6cc3c5d0202f34ea5ffebe5e12abeeb51c85f2c8
 #![allow(missing_docs, clippy::all, clippy::pedantic)]
 
 /// Error types.
@@ -1142,6 +1142,51 @@ pub struct ClientSpellSlot {
     pub base: f64,
     pub calc: f64,
     pub max: f64,
+}
+///THE HOST'S OWN ANSWER TO 'WHAT ZONE IS THIS MACHINE ON', pushed in because the engine's platform probe can fail silently and a log stamp is a zone-less local wall clock. On Windows the probe is a WinRT call Wine does not implement, so it errors and the engine falls back to UTC — every stamp then parses hours away from the wall clock the game wrote it with, and everything the 1 s heartbeat ages (fights, buffs, timers) is skewed by that whole number of hours. ABSENT MEANS THE ENGINE RESOLVES ALONE, which is what the parity runner and every test say. The two fields are two different kinds of evidence and the engine ranks them: a NAME carries DST rules a fixed offset cannot, and an OFFSET is a measurement of the same ICU clock that stamped the log — so when both are present and they disagree at the current instant, the offset wins and the name is discarded.
+///
+/// <details><summary>JSON schema</summary>
+///
+/// ```json
+///{
+///  "title": "ClockHint",
+///  "description": "THE HOST'S OWN ANSWER TO 'WHAT ZONE IS THIS MACHINE ON', pushed in because the engine's platform probe can fail silently and a log stamp is a zone-less local wall clock. On Windows the probe is a WinRT call Wine does not implement, so it errors and the engine falls back to UTC — every stamp then parses hours away from the wall clock the game wrote it with, and everything the 1 s heartbeat ages (fights, buffs, timers) is skewed by that whole number of hours. ABSENT MEANS THE ENGINE RESOLVES ALONE, which is what the parity runner and every test say. The two fields are two different kinds of evidence and the engine ranks them: a NAME carries DST rules a fixed offset cannot, and an OFFSET is a measurement of the same ICU clock that stamped the log — so when both are present and they disagree at the current instant, the offset wins and the name is discarded.",
+///  "type": "object",
+///  "properties": {
+///    "tz": {
+///      "description": "An IANA zone name as `Intl.DateTimeFormat().resolvedOptions().timeZone` spells it (`America/Los_Angeles`). Omitted when the host could not name one.",
+///      "type": "string"
+///    },
+///    "utcOffsetMin": {
+///      "description": "Minutes EAST of UTC at the instant of the attach, i.e. `-new Date().getTimezoneOffset()`. Los Angeles in September is -420.",
+///      "type": "integer"
+///    }
+///  },
+///  "additionalProperties": false
+///}
+/// ```
+/// </details>
+#[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+#[serde(deny_unknown_fields)]
+pub struct ClockHint {
+    ///An IANA zone name as `Intl.DateTimeFormat().resolvedOptions().timeZone` spells it (`America/Los_Angeles`). Omitted when the host could not name one.
+    #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+    pub tz: ::std::option::Option<::std::string::String>,
+    ///Minutes EAST of UTC at the instant of the attach, i.e. `-new Date().getTimezoneOffset()`. Los Angeles in September is -420.
+    #[serde(
+        rename = "utcOffsetMin",
+        default,
+        skip_serializing_if = "::std::option::Option::is_none"
+    )]
+    pub utc_offset_min: ::std::option::Option<i64>,
+}
+impl ::std::default::Default for ClockHint {
+    fn default() -> Self {
+        Self {
+            tz: Default::default(),
+            utc_offset_min: Default::default(),
+        }
+    }
 }
 ///`CombatSearchFightsParams`
 ///
@@ -6392,6 +6437,24 @@ impl ::std::convert::TryFrom<::std::string::String> for PerfSnapshotRequestOp {
 ///    "uptimeMs"
 ///  ],
 ///  "properties": {
+///    "clockSkewMs": {
+///      "description": "THE WALL CLOCK MINUS THE NEWEST LIVE EVENT'S `ts`, SIGNED — the engine's one wall-clock reading on this answer, and the measurement that names a broken zone outright. Sampled only from the LIVE TAIL, where the newest line is by definition seconds old, so a few seconds is healthy and a whole number of hours is a zone the engine resolved wrongly (negative when the log's stamps read ahead of this machine). Absent until the tail has folded a fresh line; a historical scan never sets it, because the age of an old line says nothing about a clock.",
+///      "type": "integer"
+///    },
+///    "clockSource": {
+///      "description": "WHERE THAT ZONE CAME FROM, so a report says whether the engine was told or guessed. `host` is the attach hint's IANA name, `platform` the engine's own probe, `offset` the hint's fixed offset (the name was absent or disagreed with it), and `utc` the last-resort fallback — which is the failure this field exists to make visible rather than silent. Absent before the first attach.",
+///      "type": "string",
+///      "enum": [
+///        "host",
+///        "platform",
+///        "offset",
+///        "utc"
+///      ]
+///    },
+///    "clockZone": {
+///      "description": "WHICH ZONE THIS GENERATION IS PARSING LOG STAMPS THROUGH — an IANA name (`America/Los_Angeles`) or, for a fixed offset resolved from the attach hint alone, `+HH:MM`/`-HH:MM`. Absent before the first attach.",
+///      "type": "string"
+///    },
 ///    "epoch": {
 ///      "$ref": "#/$defs/Epoch"
 ///    },
@@ -6438,6 +6501,27 @@ impl ::std::convert::TryFrom<::std::string::String> for PerfSnapshotRequestOp {
 #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
 #[serde(deny_unknown_fields)]
 pub struct PerfSnapshotResult {
+    ///THE WALL CLOCK MINUS THE NEWEST LIVE EVENT'S `ts`, SIGNED — the engine's one wall-clock reading on this answer, and the measurement that names a broken zone outright. Sampled only from the LIVE TAIL, where the newest line is by definition seconds old, so a few seconds is healthy and a whole number of hours is a zone the engine resolved wrongly (negative when the log's stamps read ahead of this machine). Absent until the tail has folded a fresh line; a historical scan never sets it, because the age of an old line says nothing about a clock.
+    #[serde(
+        rename = "clockSkewMs",
+        default,
+        skip_serializing_if = "::std::option::Option::is_none"
+    )]
+    pub clock_skew_ms: ::std::option::Option<i64>,
+    ///WHERE THAT ZONE CAME FROM, so a report says whether the engine was told or guessed. `host` is the attach hint's IANA name, `platform` the engine's own probe, `offset` the hint's fixed offset (the name was absent or disagreed with it), and `utc` the last-resort fallback — which is the failure this field exists to make visible rather than silent. Absent before the first attach.
+    #[serde(
+        rename = "clockSource",
+        default,
+        skip_serializing_if = "::std::option::Option::is_none"
+    )]
+    pub clock_source: ::std::option::Option<PerfSnapshotResultClockSource>,
+    ///WHICH ZONE THIS GENERATION IS PARSING LOG STAMPS THROUGH — an IANA name (`America/Los_Angeles`) or, for a fixed offset resolved from the attach hint alone, `+HH:MM`/`-HH:MM`. Absent before the first attach.
+    #[serde(
+        rename = "clockZone",
+        default,
+        skip_serializing_if = "::std::option::Option::is_none"
+    )]
+    pub clock_zone: ::std::option::Option<::std::string::String>,
     pub epoch: Epoch,
     ///Events folded in this generation. Counts EVENTS, not lines — the same number `HealthResult.events` carries.
     #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
@@ -6458,6 +6542,89 @@ pub struct PerfSnapshotResult {
     ///How long THIS PROCESS has been up. Process metadata, never world state: it survives an attach, which the epoch does not.
     #[serde(rename = "uptimeMs")]
     pub uptime_ms: i64,
+}
+///WHERE THAT ZONE CAME FROM, so a report says whether the engine was told or guessed. `host` is the attach hint's IANA name, `platform` the engine's own probe, `offset` the hint's fixed offset (the name was absent or disagreed with it), and `utc` the last-resort fallback — which is the failure this field exists to make visible rather than silent. Absent before the first attach.
+///
+/// <details><summary>JSON schema</summary>
+///
+/// ```json
+///{
+///  "description": "WHERE THAT ZONE CAME FROM, so a report says whether the engine was told or guessed. `host` is the attach hint's IANA name, `platform` the engine's own probe, `offset` the hint's fixed offset (the name was absent or disagreed with it), and `utc` the last-resort fallback — which is the failure this field exists to make visible rather than silent. Absent before the first attach.",
+///  "type": "string",
+///  "enum": [
+///    "host",
+///    "platform",
+///    "offset",
+///    "utc"
+///  ]
+///}
+/// ```
+/// </details>
+#[derive(
+    ::serde::Deserialize,
+    ::serde::Serialize,
+    Clone,
+    Copy,
+    Debug,
+    Eq,
+    Hash,
+    Ord,
+    PartialEq,
+    PartialOrd,
+)]
+pub enum PerfSnapshotResultClockSource {
+    #[serde(rename = "host")]
+    Host,
+    #[serde(rename = "platform")]
+    Platform,
+    #[serde(rename = "offset")]
+    Offset,
+    #[serde(rename = "utc")]
+    Utc,
+}
+impl ::std::fmt::Display for PerfSnapshotResultClockSource {
+    fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
+        match *self {
+            Self::Host => f.write_str("host"),
+            Self::Platform => f.write_str("platform"),
+            Self::Offset => f.write_str("offset"),
+            Self::Utc => f.write_str("utc"),
+        }
+    }
+}
+impl ::std::str::FromStr for PerfSnapshotResultClockSource {
+    type Err = self::error::ConversionError;
+    fn from_str(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+        match value {
+            "host" => Ok(Self::Host),
+            "platform" => Ok(Self::Platform),
+            "offset" => Ok(Self::Offset),
+            "utc" => Ok(Self::Utc),
+            _ => Err("invalid value".into()),
+        }
+    }
+}
+impl ::std::convert::TryFrom<&str> for PerfSnapshotResultClockSource {
+    type Error = self::error::ConversionError;
+    fn try_from(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl ::std::convert::TryFrom<&::std::string::String> for PerfSnapshotResultClockSource {
+    type Error = self::error::ConversionError;
+    fn try_from(
+        value: &::std::string::String,
+    ) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl ::std::convert::TryFrom<::std::string::String> for PerfSnapshotResultClockSource {
+    type Error = self::error::ConversionError;
+    fn try_from(
+        value: ::std::string::String,
+    ) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
 }
 ///`PerfSnapshotResultStatus`
 ///
@@ -8859,6 +9026,9 @@ impl ::std::fmt::Display for RowKey {
 ///    "logPath"
 ///  ],
 ///  "properties": {
+///    "clock": {
+///      "$ref": "#/$defs/ClockHint"
+///    },
 ///    "logPath": {
 ///      "description": "Absolute path to the EverQuest log file. The engine never discovers a path of its own and never reads a settings file — the app owns discovery and pushes the answer in.",
 ///      "type": "string"
@@ -8875,6 +9045,8 @@ impl ::std::fmt::Display for RowKey {
 #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
 #[serde(deny_unknown_fields)]
 pub struct SessionAttachParams {
+    #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+    pub clock: ::std::option::Option<ClockHint>,
     ///Absolute path to the EverQuest log file. The engine never discovers a path of its own and never reads a settings file — the app owns discovery and pushes the answer in.
     #[serde(rename = "logPath")]
     pub log_path: ::std::string::String,

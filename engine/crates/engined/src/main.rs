@@ -30,6 +30,9 @@
 /// The budgets this build enforces, served live off the running generation so the panel and a bug
 /// report state what this machine did.
 mod budgets;
+/// THE LOG CLOCK: which zone a generation parses stamps through, and how far it disagrees with
+/// this machine's.
+mod clock;
 mod concard;
 mod conn;
 mod foldsink;
@@ -47,6 +50,8 @@ mod spell_search;
 /// file, the laziness and the once-ness.
 mod spells;
 mod state;
+/// Pure mappings between the wire's generated shapes and this engine's own vocabulary.
+mod translate;
 mod views;
 mod wire;
 mod world;

@@ -169,6 +169,57 @@ export function formatAge(ms: number): string {
   return `${String(Math.round(v / 8_640_000) / 10)} days`
 }
 
+/**
+ * How far the log's clock may sit from this machine's before the panel stops reporting and starts
+ * warning. The engine's own alarm, restated by value: half an hour is above every honest cause and
+ * below the smallest real zone error, which is a whole hour.
+ */
+export const CLOCK_SKEW_WARN_MS = 30 * 60 * 1000
+
+/** The clock line, or `null` when no fold has resolved a zone yet. `warning` is the panel's cue to
+ *  draw a sentence instead of a measurement. */
+export interface EngineClockLine {
+  text: string
+  warning: boolean
+}
+
+/** A signed duration a person reads, at the scale it happens to be. The sign is kept because which
+ *  way the two clocks disagree is half of what the reading says. */
+function signedAge(ms: number): string {
+  return `${ms < 0 ? '-' : ''}${formatAge(Math.abs(ms))}`
+}
+
+/** `7h 0m` — the shape a whole-number-of-hours zone error reads as, which is the whole point. */
+function hoursAndMinutes(ms: number): string {
+  const total = Math.round(Math.abs(ms) / 60_000)
+  return `${String(Math.floor(total / 60))}h ${String(total % 60)}m`
+}
+
+/**
+ * WHICH CLOCK THE FOLD IS ON, in the panel's words.
+ *
+ * Ordinarily a measurement: the zone, where the engine got it, and how far the newest live line sits
+ * from this machine's clock. Past `CLOCK_SKEW_WARN_MS` it stops being a measurement and becomes a
+ * finding, because a whole number of hours is a zone the engine resolved wrongly and every fight,
+ * buff and timer is wrong with it. The zone NAME is dropped from the warning deliberately: a person
+ * reading "fights will be wrong" does not need an IANA identifier to act on it.
+ */
+export function formatEngineClock(sample: EnginePerfSample): EngineClockLine | null {
+  const engine = sample.engine
+  const zone = engine?.clockZone
+  if (zone === undefined) return null
+  const skew = engine?.clockSkewMs
+  if (skew !== undefined && Math.abs(skew) >= CLOCK_SKEW_WARN_MS) {
+    return {
+      text: `The log's clock disagrees with this machine's by ${hoursAndMinutes(skew)}. Fights and timers will be wrong.`,
+      warning: true
+    }
+  }
+  const source = engine?.clockSource
+  const named = source === undefined ? zone : `${zone} (${source})`
+  return { text: skew === undefined ? named : `${named} · skew ${signedAge(skew)}`, warning: false }
+}
+
 /** `live · epoch 2` — the engine's state in the two terms that decide what everything else means. */
 export function formatEngineState(sample: EnginePerfSample): string {
   const engine = sample.engine

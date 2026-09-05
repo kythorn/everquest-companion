@@ -155,6 +155,21 @@ function stepSectionCarriesTheEngineNumbers(text: string): void {
     /\b(live|folding|attaching|starting|idle)\b/.test(flat) && /epoch \d+/.test(flat),
     flat
   )
+  // THE CLOCK THE FOLD IS ON (JOS-536). No unit test can make this claim: the zone in this pixel
+  // was resolved inside the Rust process from a hint this app computed at the attach, and `host` is
+  // the word that says the app was believed. On a machine whose platform probe also works the
+  // source could honestly be `platform`; what must never appear here is `utc`, which is the Wine
+  // failure — and the warning sentence must not appear at all, because the two clocks agree.
+  check(
+    'the panel says WHICH CLOCK the fold is on, resolved from the zone this app told the engine at attach',
+    /clock/.test(flat) && /\((host|platform|offset)\)/.test(flat),
+    flat
+  )
+  check(
+    '…and the two clocks agree, so it reports a skew rather than warning that fights will be wrong',
+    !/Fights and timers will be wrong/.test(flat),
+    flat
+  )
   check(
     '…the events the ENGINE folded, which no other part of this app counts',
     /events folded/.test(flat) && /[1-9][\d,]* /.test(flat),

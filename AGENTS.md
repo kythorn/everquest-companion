@@ -114,15 +114,25 @@ docs/agents-archive.md.
   row (spec · signature · occurrences · disposition), integrators append on
   sighting, and a flake at 3+ occurrences must have a fix ticket or chip —
   "green on re-run" is a report line, never a resolution. Known rows:
-  - `sky-filters.e2e` · expanded-quest step vs live-log viewKey remount (6
-    sightings, multi-spec-sweep only) · **RESOLVED 9816cd34 (JOS-279)** —
-    order-hardening was a BET; `tests/e2e/viewRemount.mts` HOLDS the
-    precondition instead. Full history: docs/agents-archive.md.
-  - `sky-filters.e2e` · a SECOND, distinct cause: collapsed-mount/close-panel
-    steps failed once with the remount guard HOLDING ("0 rebuilds seen while
-    settling") · 1 sighting (2026-08-13, JOS-294 worker six-spec sweep; green
-    standalone and in the next full sweep) · NOT the resolved row's signature —
-    unknown mechanism, watch for a second sighting before diagnosing.
+  - `sky-filters.e2e` · remount race · **RESOLVED 9816cd34 (JOS-279)**
+    (`tests/e2e/viewRemount.mts` holds the precondition); a SECOND distinct
+    cause with the guard holding · 1 sighting 2026-08-13 · watch. Both rows
+    at full length: docs/agents-archive.md.
+  - `engined tests/perf_snapshot.rs` · `perf.snapshot was refused: Unavailable
+    "the fold did not answer within 5000 ms"` from the `until` poll while the
+    engine is still loading its spell catalog on a starved CI runner · 1
+    sighting (2026-09-04, v1.16.0 tag run, two tests at once; the main-push
+    run of the same commit was green) · HARDENED same day: `until` reads that
+    one refusal as "not yet" and keeps polling to `PATIENCE`; every other
+    refusal still panics.
+  - `engined tests/combat.rs` live-meter tests · the fight closes before the
+    test's hit lands (`Drop` op where an edit was expected; segment "fight"
+    not "current"), plus one harness connect timeout · 1 sighting (2026-09-04,
+    v1.16.0 tag engine job, second attempt, three tests; same commit green on
+    the main push) · MECHANISM KNOWN: `Staged::line` stamps relative to TEST
+    START while closure is judged on the wall clock (`FALLBACK_IDLE_MS` 60 s),
+    so a runner that takes over a minute to go live has already idled the
+    fight · chip filed: anchor live stamps to go-live.
   - `combat-dashboard.e2e` · narrow-window resize never lands, settleStable
     settles on stale geometry · 6 sightings 2026-08-10→26, including
     STANDALONE (the full-sweep-only pattern is broken) · fix shape diagnosed
@@ -475,6 +485,15 @@ Two boundary laws hold this up, and both FAIL THE BUILD rather than relying on m
 - **the renderer never munges domain data** — `eslint.domainMunging.mjs`, scoped to
   `src/renderer/**`, exemptions inline and reasoned, count only ever shrinks
   (`tests/domainMunging.test.mts`).
+
+- **THE LOG CLOCK IS THE HOST'S TO NAME, AND A SILENT UTC IS A DEFECT (JOS-536).** A log stamp is
+  a zone-less local wall clock; the engine's own probe (`iana-time-zone`, a WinRT call) fails under
+  Wine and on some real installs, and a UTC fallback moves every event by whole hours so fights close
+  on every beat. `session.attach` carries the host's `clock` (IANA name + UTC offset, read fresh per
+  attach), `eqlog::resolve_zone` ranks host name → platform probe → fixed offset → UTC, an offset
+  vetoes a name that disagrees with it, and `perf.snapshot.clockSkewMs` measures the live tail's
+  newest line against the wall clock — a whole number of hours there is a wrong zone, never lag.
+  In a bug report's perf block, `behindMs` of exactly N hours is this bug; `clock utc` names it.
 
 **ENGINE COMMENTS STATE THE RULE, NOT THE STORY (owner, 2026-08-27, JOS-524).** A comment
 names a design rule or a constraint the code cannot show: 1-3 lines, one-line why. Module
@@ -1482,7 +1501,11 @@ the full per-lane evidence lives in docs/agents-archive.md.
   rule 2026-08-10).** Notes are a release-driven activity; worker branches
   never touch `releaseNotes.ts` — the integrator drafts the whole entry from
   the release's merged tickets when the tag is cut. Full story:
-  docs/agents-archive.md.
+  docs/agents-archive.md. **A NOTE IS SHORT (owner, 2026-09-03):** at most
+  three sentences — what the player sees now, optionally why it was wrong,
+  optionally what changed in a clause; a second visible thing is a second
+  bullet. The shape rules live in the file header and
+  `tests/releaseNotes.test.mts` enforces the ceiling.
 - **RELEASE CADENCE: tag only when the user asks, or at a clearly STABLE
   point** — features verified end-to-end, the gauntlet green, no waves in
   flight. Commits land on main continuously; a tag is a deliberate act,

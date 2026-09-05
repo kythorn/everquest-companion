@@ -8,7 +8,7 @@
 // schema edit that lands without regenerating turns tests/protocolSchema.test.mts red on the
 // TypeScript side and the protocol-codegen staleness test red on the Rust side.
 //
-// schema-digest: sha256:126ec50388678281ec8ad90206c724655a0c3aea31b0438493468b9587b804bb
+// schema-digest: sha256:d02184bb8cfcfc641683a27d6cc3c5d0202f34ea5ffebe5e12abeeb51c85f2c8
 
 /**
  * Anything that can travel the wire, in either direction. The transport adapters are generic over exactly this: a transport moves ProtocolMessages and knows nothing else about the protocol.
@@ -231,6 +231,20 @@ export interface SessionAttachParams {
    * WHERE THE ENGINE'S OWN PERSISTED KNOWLEDGE LIVES — Electron's `userData` directory, pushed in because the engine cannot derive it (boundary verdict 4, cutover ledger item 6). Two artifacts are read out of it at attach and written back on the engine's own cadence: `resist-ledger.json` and `message-overlay.json`, both in the app's EXISTING format, verbatim, so the two implementations can hold the same file. IT IS A FIELD OF THE ATTACH RATHER THAN A `*.define`, and the distinction is load-bearing twice over. A define may arrive mid-fold and this may not: the seed has to be in place BEFORE the first byte is folded, because a bucket seeded after the fold began would be added to the fold's own output — the JOS-231 doubling — and because `begin_source` can only discard a bucket it already has. And a state dir that could be changed halfway through a fold would mean the engine could be told to write this log's ledger somewhere else mid-flight, which is not a thing with an honest meaning. It rides `logPath` because it is the same KIND of fact: this world, folded from this log, filed beside this profile. ABSENT MEANS NO PERSISTENCE AT ALL — nothing is read, nothing is written, and the fold is exactly the file-free one the equivalence oracle records. That is the default and it is what every non-app client (the parity runner, every test) gets by saying nothing.
    */
   stateDir?: string
+  clock?: ClockHint
+}
+/**
+ * THE HOST'S OWN ANSWER TO 'WHAT ZONE IS THIS MACHINE ON', pushed in because the engine's platform probe can fail silently and a log stamp is a zone-less local wall clock. On Windows the probe is a WinRT call Wine does not implement, so it errors and the engine falls back to UTC — every stamp then parses hours away from the wall clock the game wrote it with, and everything the 1 s heartbeat ages (fights, buffs, timers) is skewed by that whole number of hours. ABSENT MEANS THE ENGINE RESOLVES ALONE, which is what the parity runner and every test say. The two fields are two different kinds of evidence and the engine ranks them: a NAME carries DST rules a fixed offset cannot, and an OFFSET is a measurement of the same ICU clock that stamped the log — so when both are present and they disagree at the current instant, the offset wins and the name is discarded.
+ */
+export interface ClockHint {
+  /**
+   * An IANA zone name as `Intl.DateTimeFormat().resolvedOptions().timeZone` spells it (`America/Los_Angeles`). Omitted when the host could not name one.
+   */
+  tz?: string
+  /**
+   * Minutes EAST of UTC at the instant of the attach, i.e. `-new Date().getTimezoneOffset()`. Los Angeles in September is -420.
+   */
+  utcOffsetMin?: number
 }
 export interface SessionHealthRequest {
   id: RequestId
@@ -802,6 +816,18 @@ export interface PerfSnapshotResult {
    * The `ts` of the last event folded — THE LOG'S OWN CLOCK, never the host's. Its distance from the host's clock is the freshness figure the panel draws, and that subtraction is the CALLER's to make: the engine does not read a wall clock to answer this.
    */
   lastEventTs?: number
+  /**
+   * WHICH ZONE THIS GENERATION IS PARSING LOG STAMPS THROUGH — an IANA name (`America/Los_Angeles`) or, for a fixed offset resolved from the attach hint alone, `+HH:MM`/`-HH:MM`. Absent before the first attach.
+   */
+  clockZone?: string
+  /**
+   * WHERE THAT ZONE CAME FROM, so a report says whether the engine was told or guessed. `host` is the attach hint's IANA name, `platform` the engine's own probe, `offset` the hint's fixed offset (the name was absent or disagreed with it), and `utc` the last-resort fallback — which is the failure this field exists to make visible rather than silent. Absent before the first attach.
+   */
+  clockSource?: 'host' | 'platform' | 'offset' | 'utc'
+  /**
+   * THE WALL CLOCK MINUS THE NEWEST LIVE EVENT'S `ts`, SIGNED — the engine's one wall-clock reading on this answer, and the measurement that names a broken zone outright. Sampled only from the LIVE TAIL, where the newest line is by definition seconds old, so a few seconds is healthy and a whole number of hours is a zone the engine resolved wrongly (negative when the log's stamps read ahead of this machine). Absent until the tail has folded a fresh line; a historical scan never sets it, because the age of an old line says nothing about a clock.
+   */
+  clockSkewMs?: number
   ingest: PerfIngest
   /**
    * One row per view source that has served a frame in this generation. A source nobody has subscribed to is ABSENT rather than a row of zeros — the same rule the panel applies to a process type with no process behind it.

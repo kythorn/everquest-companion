@@ -102,6 +102,7 @@ import { lookupItem } from '../itemLookup'
 import { noteEngineEdge } from '../telemetry/breadcrumbs'
 import { lookupMob } from '../mobLookup'
 import { attachStateDir, takeArtifactsBack } from './artifactOwner'
+import { hostClockHint, resolvedTimeZone } from './hostClock'
 // THE LAUNCH BANNER'S THREE EDGES (JOS-503). This file is the only place that knows when a
 // historical fold BEGINS (an accepted attach), how far it has got (the engine's progress frames)
 // and when it LANDS (the go-live edge below) — so it feeds all three to the one state main pushes.
@@ -589,10 +590,13 @@ async function sendAttach(mine: number, l: LiveEngine, logPath: string): Promise
     userData: () => app.getPath('userData'),
     note: debug
   })
+  // READ FRESH, HERE (JOS-536). A respawn is a launch and the offset is a function of the date, so
+  // a hint computed anywhere but at the attach is wrong across a DST transition.
+  const clock = hostClockHint(new Date(), resolvedTimeZone)
   try {
     const result = await l.client.request(
       'session.attach',
-      stateDir === undefined ? { logPath } : { logPath, stateDir }
+      stateDir === undefined ? { logPath, clock } : { logPath, stateDir, clock }
     )
     if (gen !== mine) return null
     l.attachedTo = logPath
