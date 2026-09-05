@@ -67,6 +67,41 @@ Files this port edits, and must therefore expect conflicts in (keep hunks minima
 
 Keep this table honest. It is the merge cost of the port, written down.
 
+## Carried upstream patches
+
+A third category, and the only one with an EXPIRY. These are fixes that are **not ours and not
+upstream's yet**: they exist as an open pull request against `jmoyers/everquest-companion`, they
+fix something this fork's user hits today, and we cherry-picked them ahead of the merge.
+
+They are debt, not ownership. A carried patch must be **dropped** once upstream ships its own
+version, or a later `git merge upstream/main` applies the same fix twice.
+
+| carried | source | what it fixes |
+|---|---|---|
+| `25fb8b4d` (upstream `8ae94e5f`) — bonus experience lines are experience | [upstream PR #63](https://github.com/jmoyers/everquest-companion/pull/63), opened 2026-09-04 by James Whiteneck (@Amerzel) | A server XP-bonus event MOVES the sentence — `You gain experience (with a bonus)!`, the parenthetical BEFORE the bang — so the anchored regex in `parse/world.rs` never matches and the line falls to `kind:unknown`. While such an event runs the game prints *only* that shape, so for its whole duration the leveling pace, the level ETA, the XP overlay's `xp` row, the kill→exp join and the kills module's credited/witnessed split all read nothing. Found here 2026-09-05 as "the three Vox kills at d2/d3/d4 never reached the boss roster" — the roster counts CREDITED kills, and credit IS the exp line. Measured in this fork's own log: 5999 plain / 316 bonus / 178 party, and all three of those kills used the bonus shape. |
+
+### Checking whether a carried patch can be dropped
+
+Run this periodically — a merge is the natural moment:
+
+```bash
+git fetch upstream
+git show upstream/main:engine/crates/eqlog/src/parse/world.rs | grep -n 'with a bonus'
+```
+
+**A hit means drop ours.** Revert the cherry-pick in its own commit, name the upstream commit that
+replaced it, and let the merge bring upstream's version in.
+
+**THE TEST IS THE BEHAVIOUR, NOT THE PULL REQUEST.** Do not check whether #63 was merged. That PR
+is one contributor's patch against a repo whose maintainer never asked for it; it may be merged,
+rewritten, superseded by the maintainer's own fix, or closed unmerged while the bug gets fixed some
+other way. Every one of those makes our copy redundant and only the first is visible from the PR's
+status — so the check greps upstream's SOURCE for the behaviour, and a fix that lands under a
+different name, in a different file, or with a different regex still retires our patch.
+
+If the grep stays empty for a long time, that is not an argument for re-checking by hand; it is the
+argument for the scheduled merge probe described below, which would notice on our behalf.
+
 ---
 
 # The long game: how this fork stays alive
