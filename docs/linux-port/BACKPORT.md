@@ -51,6 +51,7 @@ Files this port owns outright (upstream will never touch them — merges here ar
 | `docs/linux-port/**` | this port's documentation |
 | `src/main/log/discoveryLinux.ts` | Wine/Proton prefix sweep |
 | `src/main/presenceNativeLinux.ts` | X11 presence via koffi |
+| `src/main/overlayClickThroughLinux.ts` | the X11 input region an overlay's click-through actually is — Electron 43/44 lose it non-deterministically on X11 (electron/electron#52456), so this app states and verifies it itself |
 
 Files this port edits, and must therefore expect conflicts in (keep hunks minimal):
 
@@ -59,6 +60,7 @@ Files this port edits, and must therefore expect conflicts in (keep hunks minima
 | `src/main/log/discovery.ts` | one optional `linuxPrefixCandidates` probe field; the drive sweep split into a helper to keep the branching flat. Absent ⇒ byte-identical behaviour, so win32 and every existing test are untouched |
 | `src/main/log/config.ts` | wires that probe to the real filesystem — it is the only place `DiscoveryProbes` is actually assembled, so the field would never fire without it. Guarded `process.platform === 'win32' ? [] : …` |
 | `src/main/presenceNative.ts` | one branch in `loadPresenceNative()` |
+| `src/main/windows.ts` | two calls into `overlayClickThroughLinux.ts` — one beside the `setIgnoreMouseEvents` in `setOverlayIgnoreMouse`, one beside the cursor ring's. Both are no-ops off Linux/X11, so win32 behaviour is byte-identical, and each is a single contiguous line next to the call it shadows |
 | `electron-builder.yml` | a `linux:` block; the onnxruntime/koffi platform filters |
 | `package.json` | `dist:linux` script |
 | `.gitattributes` | the CRLF fixture pin |

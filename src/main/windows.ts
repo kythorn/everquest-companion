@@ -44,6 +44,10 @@ import {
 // is wired to `setOverlayIgnoreMouse` below — the one place this app changes click-through — so
 // the watch can only exist while a locked overlay is really capturing.
 import { stopOverlayPointerWatch, watchOverlayPointer } from './overlayPointerWatch'
+import {
+  applyLinuxClickThrough,
+  installLinuxClickThroughGuard
+} from './overlayClickThroughLinux'
 // OPT-IN drag magnetism (JOS-217). Its own module — this file is at the 400-code-line ceiling, and
 // the whole feature is one `will-move` listener over pure geometry. It is handed the registry
 // below rather than importing it back out of here; see that file's header.
@@ -585,6 +589,11 @@ export function setOverlayIgnoreMouse(kind: OverlayKind, ignore: boolean): void 
   const effective = overlaysParkedNow || ignore
   // ONE SHAPE, TWO VALUES, NO SECOND ARGUMENT — see the hook note above.
   w.setIgnoreMouseEvents(effective)
+  // …AND ON X11, SAY IT AGAIN OURSELVES. Electron 43/44 lose the input region non-deterministically
+  // on Linux (electron/electron#52456, measured per-window in ./overlayClickThroughLinux.ts), and a
+  // lost region is not "clicks are eaten" but "the game stops seeing the cursor MOVE" over a strip
+  // parked at the top centre of the screen. A no-op on every other platform and on Wayland.
+  applyLinuxClickThrough(w, effective)
   applyOpaqueStripVisibility(kind, ignore)
   watchOverlayPointer(kind, w, effective)
   // The click-through state is an input to which rectangles are worth watching, and this is the one
@@ -880,6 +889,14 @@ export function createOverlayWindow(kind: OverlayKind): void {
     applyOverlayLocked(kind, getOverlayConfig(kind).locked)
     raiseCursorRing()
   })
+
+  // The X11 input region has to survive this window's own show/bounds sequence, which is where
+  // the Electron 43/44 race loses it — see ./overlayClickThroughLinux.ts. Reads the CURRENT desired
+  // state on every reassert (cards arrive, the park comes and goes) rather than capturing one.
+  installLinuxClickThroughGuard(
+    w,
+    () => overlaysParkedNow || (overlayDesiredIgnore[kind] ?? getOverlayConfig(kind).locked)
+  )
 
   // Hand the window to ./overlayBounds.ts, which persists where the USER leaves it (never one of
   // our own placements — JOS-187) and keeps a fit kind's height following its content (JOS-386).
@@ -1177,6 +1194,10 @@ export function createCursorRingWindow(bounds: ScreenRect): void {
   // overlays' locked mode pays that cost for a reason (their hover sensor re-enables capture
   // over the pin); the ring has no hover sensor and nothing to click, so it pays nothing.
   w.setIgnoreMouseEvents(true)
+  // Same X11 correction, and this window needs it most: it is sized to the WHOLE EverQuest window,
+  // so a lost input region here is not a dead strip at the top of the screen but a dead GAME.
+  applyLinuxClickThrough(w, true)
+  installLinuxClickThroughGuard(w, () => true)
 
   const wc = w.webContents
   wc.on('preload-error', (_e, preloadPath, error) =>
